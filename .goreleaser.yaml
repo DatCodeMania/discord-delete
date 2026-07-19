@@ -1,0 +1,112 @@
+# A v* tag triggers the release workflow: cross-compile every platform and
+# publish a GitHub Release with checksums.
+version: 2
+
+project_name: discord-delete
+
+builds:
+  - id: linux
+    goos: [linux]
+    goarch: [amd64, arm64]
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags: ["-s -w -X main.buildVersion={{ .Version }}"]
+  - id: darwin
+    goos: [darwin]
+    goarch: [amd64, arm64]
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags: ["-s -w -X main.buildVersion={{ .Version }}"]
+  - id: windows
+    goos: [windows]
+    goarch: [amd64, arm64]
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags: ["-s -w -X main.buildVersion={{ .Version }}"]
+
+archives:
+  - id: linux
+    ids: [linux]
+    formats: [tar.gz]
+    wrap_in_directory: true
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+      - src: launchers/linux.sh
+        strip_parent: true
+  - id: darwin
+    ids: [darwin]
+    formats: [zip]
+    wrap_in_directory: true
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+      - src: launchers/macos.command
+        strip_parent: true
+  - id: windows
+    ids: [windows]
+    formats: [zip]
+    wrap_in_directory: true
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+      - src: launchers/windows.bat
+        strip_parent: true
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github-native
+
+homebrew_casks:
+  - repository:
+      owner: DatCodeMania
+      name: homebrew-tap
+      token: "{{ .Env.GH_PAT }}"
+    ids: [darwin]
+    binaries: [discord-delete]
+    directory: Casks
+    homepage: "https://github.com/DatCodeMania/discord-delete"
+    description: "Bulk-delete your Discord messages and reactions from your data package"
+    license: MIT
+    # Strip Gatekeeper quarantine
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/discord-delete"]
+          end
+
+scoops:
+  - repository:
+      owner: DatCodeMania
+      name: scoop-bucket
+      token: "{{ .Env.GH_PAT }}"
+    ids: [windows]
+    directory: bucket
+    homepage: "https://github.com/DatCodeMania/discord-delete"
+    description: "Bulk-delete your Discord messages and reactions from your data package"
+    license: MIT
+
+aurs:
+  - name: discord-delete-bin
+    homepage: "https://github.com/DatCodeMania/discord-delete"
+    description: "Bulk-delete your Discord messages and reactions from your data package"
+    maintainers:
+      - "DatCodeMania <aur@codemania.dev>"
+    license: MIT
+    private_key: "{{ .Env.AUR_KEY }}"
+    git_url: "ssh://aur@aur.archlinux.org/discord-delete-bin.git"
+    ids: [linux]
+    provides: [discord-delete]
+    conflicts: [discord-delete]
+    # The archive unpacks to a folder whose name carries the arch, so a fixed
+    # path only matches one arch. makepkg extracts just the current arch, so the
+    # single ./*/ dir is unambiguous.
+    package: |-
+      install -Dm755 ./*/discord-delete "${pkgdir}/usr/bin/discord-delete"
+      install -Dm644 ./*/LICENSE "${pkgdir}/usr/share/licenses/discord-delete-bin/LICENSE"

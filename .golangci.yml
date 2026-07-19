@@ -1,0 +1,18 @@
+version: "2"
+
+linters:
+  settings:
+    errcheck:
+      # Deliberate best-effort calls. Closes on read paths and the resume
+      # log's flush-per-line writes ignore errors by design: a lost resume
+      # record only costs a redundant DELETE (a 404) on the next run.
+      exclude-functions:
+        - (io.Closer).Close
+        - (io/fs.File).Close
+        - (*os.File).Close
+        - (*bufio.Writer).Flush
+        - (*bufio.Writer).WriteString
+        - (*bufio.Writer).WriteByte
+        - (net/http.ResponseWriter).Write
+        - io.WriteString
+        - os.RemoveAll

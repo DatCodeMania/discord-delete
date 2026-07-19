@@ -1,0 +1,84 @@
+package main
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+func TestFriendlyUser(t *testing.T) {
+	cases := []struct{ user, disc, global, want string }{
+		{"alice", "0", "Alice A.", "Alice A."}, // new scheme with a display name
+		{"bob", "1234", "", "bob#1234"},        // legacy discriminator
+		{"carol", "0", "", "carol"},            // new scheme, no display name
+		{"", "0", "", "your account"},          // nothing usable
+	}
+	for _, c := range cases {
+		if got := friendlyUser(c.user, c.disc, c.global); got != c.want {
+			t.Errorf("friendlyUser(%q,%q,%q) = %q, want %q", c.user, c.disc, c.global, got, c.want)
+		}
+	}
+}
+
+func TestCheckTokenValid(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "good-token" {
+			w.WriteHeader(401)
+			return
+		}
+		if r.URL.Path != "/users/@me" {
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"username":"me","discriminator":"0","global_name":"Me Myself"}`))
+	}))
+	defer srv.Close()
+	old := apiBaseOverride
+	apiBaseOverride = srv.URL
+	defer func() { apiBaseOverride = old }()
+
+	msg := checkTokenCmd("good-token")().(tokenCheckMsg)
+	if msg.state != tsValid {
+		t.Fatalf("want tsValid, got %v (err %q)", msg.state, msg.err)
+	}
+	if msg.user != "Me Myself" {
+		t.Fatalf("want user %q, got %q", "Me Myself", msg.user)
+	}
+}
+
+func TestCheckTokenInvalid(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(401)
+	}))
+	defer srv.Close()
+	old := apiBaseOverride
+	apiBaseOverride = srv.URL
+	defer func() { apiBaseOverride = old }()
+
+	msg := checkTokenCmd("bad-token")().(tokenCheckMsg)
+	if msg.state != tsInvalid {
+		t.Fatalf("want tsInvalid, got %v", msg.state)
+	}
+}
+
+func TestCheckTokenEmptyIsNone(t *testing.T) {
+	msg := checkTokenCmd("   ")().(tokenCheckMsg)
+	if msg.state != tsNone {
+		t.Fatalf("empty token should be tsNone, got %v", msg.state)
+	}
+}
+
+// applyTokenCheck must ignore a stale probe whose token no longer matches the model's current token.
+func TestApplyTokenCheckIgnoresStale(t *testing.T) {
+	m := demoModel()
+	m.cfg.token = "new-token"
+	m.tokenState = tsChecking
+	m.applyTokenCheck(tokenCheckMsg{token: "old-token", state: tsValid, user: "Ghost"})
+	if m.tokenState != tsChecking || m.tokenUser != "" {
+		t.Fatalf("stale result should be ignored, got state=%v user=%q", m.tokenState, m.tokenUser)
+	}
+	m.applyTokenCheck(tokenCheckMsg{token: "new-token", state: tsValid, user: "Real"})
+	if m.tokenState != tsValid || m.tokenUser != "Real" {
+		t.Fatalf("matching result should apply, got state=%v user=%q", m.tokenState, m.tokenUser)
+	}
+}

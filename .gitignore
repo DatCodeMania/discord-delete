@@ -1,0 +1,8 @@
+/discord-delete
+/dist/
+*.token
+.env
+*.zip
+!demo/demo-package.zip
+package/
+demo.mp4
