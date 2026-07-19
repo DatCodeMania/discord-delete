@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -175,7 +176,7 @@ func cleanPickerPath(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "~" || strings.HasPrefix(s, "~/") {
 		if home, err := os.UserHomeDir(); err == nil {
-			s = home + s[1:]
+			s = filepath.Join(home, s[1:])
 		}
 	}
 	return s
