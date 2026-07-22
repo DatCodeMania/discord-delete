@@ -49,7 +49,7 @@ func subscribeControl(ctx context.Context, control string, onCmd func(controlCmd
 	if control == "" {
 		return
 	}
-	streamURL := strings.TrimRight(control, "/") + "/json"
+	streamURL := controlStreamURL(control)
 	backoff := time.Second
 	for ctx.Err() == nil {
 		start := time.Now()
@@ -67,6 +67,13 @@ func subscribeControl(ctx context.Context, control string, onCmd func(controlCmd
 		}
 		backoff = min(backoff*2, 30*time.Second)
 	}
+}
+
+// controlStreamURL builds the ntfy JSON stream endpoint for a control target:
+// /json goes on the topic path, before any ?auth=... query string.
+func controlStreamURL(control string) string {
+	base, rest := splitTargetQuery(control)
+	return strings.TrimRight(base, "/") + "/json" + rest
 }
 
 // streamControlOnce holds one streaming connection open, dispatching every

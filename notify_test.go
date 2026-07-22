@@ -58,6 +58,10 @@ func TestControlTarget(t *testing.T) {
 		"https://ntfy.sh/x/":      "https://ntfy.sh/x-ctl",
 		"http://localhost/topic":  "http://localhost/topic-ctl",
 		"https://ntfy.sh/my-runs": "https://ntfy.sh/my-runs-ctl",
+		// ntfy's query auth form: -ctl goes on the topic, not the token.
+		"https://ntfy.sh/x?auth=tk_abc":  "https://ntfy.sh/x-ctl?auth=tk_abc",
+		"https://ntfy.sh/x/?auth=tk_abc": "https://ntfy.sh/x-ctl?auth=tk_abc",
+		"?auth=tk_abc":                   "",
 	}
 	for in, want := range cases {
 		if got := controlTarget(in); got != want {

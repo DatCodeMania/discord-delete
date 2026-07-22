@@ -30,6 +30,21 @@ func TestParseControlCmd(t *testing.T) {
 	}
 }
 
+// The /json stream segment belongs on the topic path, ahead of any auth query.
+func TestControlStreamURL(t *testing.T) {
+	cases := map[string]string{
+		"https://ntfy.sh/x-ctl":              "https://ntfy.sh/x-ctl/json",
+		"https://ntfy.sh/x-ctl/":             "https://ntfy.sh/x-ctl/json",
+		"https://ntfy.sh/x-ctl?auth=tk_abc":  "https://ntfy.sh/x-ctl/json?auth=tk_abc",
+		"https://ntfy.sh/x-ctl/?auth=tk_abc": "https://ntfy.sh/x-ctl/json?auth=tk_abc",
+	}
+	for in, want := range cases {
+		if got := controlStreamURL(in); got != want {
+			t.Errorf("controlStreamURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 // TestStreamControlOnce confirms only message-event commands are dispatched,
 // in order, ignoring open/keepalive events and unknown message bodies.
 func TestStreamControlOnce(t *testing.T) {

@@ -22,21 +22,33 @@ func resolveNtfyURL(s string) string {
 	return "https://ntfy.sh/" + strings.TrimPrefix(s, "/")
 }
 
+// splitTargetQuery splits an ntfy target into its topic URL and any trailing
+// ?query/#fragment (ntfy's ?auth=... form rides the query), so path edits
+// (deriving -ctl, adding /json) leave auth parameters intact.
+func splitTargetQuery(s string) (base, rest string) {
+	if i := strings.IndexAny(s, "?#"); i >= 0 {
+		return s[:i], s[i:]
+	}
+	return s, ""
+}
+
 // controlTarget derives the remote-control topic from the status target by
-// appending "-ctl". Notifications sent to the status topic carry action buttons
-// that POST a short command (pause/resume/stop) here; the running program
-// subscribes to it and acts on them. Returns "" when notifications are off.
+// appending "-ctl" to the topic (the URL path), keeping any query string.
+// Notifications sent to the status topic carry action buttons that POST a
+// short command (pause/resume/stop) here; the running program subscribes to it
+// and acts on them. Returns "" when notifications are off.
 //
 // Whoever can see your ntfy topic can post these commands. Pausing and stopping
 // fail safe (they only ever slow or halt deletion, never start more), so this is
 // a deliberate, low-risk trade for phone control. Use a self-hosted or
 // authenticated ntfy server, or a hard-to-guess topic name, if that matters.
 func controlTarget(statusTarget string) string {
-	s := strings.TrimRight(statusTarget, "/")
+	base, rest := splitTargetQuery(statusTarget)
+	s := strings.TrimRight(base, "/")
 	if s == "" {
 		return ""
 	}
-	return s + "-ctl"
+	return s + "-ctl" + rest
 }
 
 // ntfyAction is an http action button: tapping it POSTs `body` to `url`.
