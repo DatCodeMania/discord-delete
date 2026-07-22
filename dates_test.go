@@ -109,3 +109,26 @@ func TestResolveBoundsRejectsMalformedSnowflake(t *testing.T) {
 		t.Fatal("malformed before-snowflake must error")
 	}
 }
+
+// A pre-epoch before-date maps to snowflake 0, which the filter reads as "no
+// upper bound". It must error (likely a year typo), never silently widen the
+// deletion range to everything.
+func TestResolveBoundsRejectsPreEpochBeforeDate(t *testing.T) {
+	now := time.Date(2026, 7, 22, 0, 0, 0, 0, time.UTC)
+	if _, err := resolveBounds("", "", "", "2014-06-01", "", now); err == nil {
+		t.Fatal("pre-epoch before-date must error, not drop the bound")
+	}
+	// Exactly the epoch also resolves to 0 and must be rejected.
+	if _, err := resolveBounds("", "", "", "2015-01-01T00:00:00Z", "", now); err == nil {
+		t.Fatal("epoch before-date must error, not drop the bound")
+	}
+	// A pre-epoch AFTER date is fine: clamping to "no lower bound" keeps the
+	// same messages (nothing exists before the epoch), so it must not error.
+	tb, err := resolveBounds("", "", "2014-06-01", "", "", now)
+	if err != nil {
+		t.Fatalf("pre-epoch after-date should be allowed: %v", err)
+	}
+	if tb.AfterID != 0 {
+		t.Fatalf("pre-epoch after-date should clamp to 0, got %d", tb.AfterID)
+	}
+}

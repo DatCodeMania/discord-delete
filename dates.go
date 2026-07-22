@@ -166,6 +166,12 @@ func resolveBounds(afterSnow, beforeSnow, afterDate, beforeDate, last string, no
 			return tb, err
 		}
 		id := timeToSnowflake(t)
+		if id == 0 {
+			// A pre-epoch date maps to 0, and 0 means "no upper bound" in the
+			// filter: silently dropping the bound would widen deletion to
+			// everything. Error instead, same rule as parseSnowflake.
+			return tb, fmt.Errorf("'before' date %q is before Discord existed (2015-01-01), so it would match nothing; check the date for a typo", beforeDate)
+		}
 		if tb.BeforeID == 0 || id < tb.BeforeID {
 			tb.BeforeID = id
 		}

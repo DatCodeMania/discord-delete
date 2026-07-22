@@ -107,6 +107,24 @@ func TestRunningNtfy(t *testing.T) {
 	}
 }
 
+// Notifications carry only counts/status: raw engine errors hold message IDs,
+// request URLs, and response snippets, none of which may reach ntfy.
+func TestRunningNtfyOmitsErrorText(t *testing.T) {
+	snap := Snapshot{
+		Total: 100, Deleted: 50, Failed: 3, Processed: 53,
+		Errors: []string{"delete 123456789012345678: HTTP 400 secret response body"},
+	}
+	m := runningNtfy("pkg.zip", snap, false, "")
+	for _, leak := range []string{"123456789012345678", "secret", "last error"} {
+		if strings.Contains(m.body, leak) {
+			t.Errorf("notification body leaks %q: %q", leak, m.body)
+		}
+	}
+	if !strings.Contains(m.body, "3 failed") {
+		t.Errorf("failed count should still be reported: %q", m.body)
+	}
+}
+
 func TestPostNtfyIncludesActionsHeader(t *testing.T) {
 	var gotActions string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

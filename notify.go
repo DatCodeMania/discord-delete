@@ -136,9 +136,10 @@ func runningNtfy(pkg string, snap Snapshot, paused bool, ctlTarget string) ntfyM
 		fmt.Fprintf(&b, " · %s failed", commafy(int(snap.Failed)))
 	}
 	fmt.Fprintf(&b, "\neta %s · %.2f msg/s", etaStr(snap), snap.Rate)
-	if n := len(snap.Errors); n > 0 {
-		fmt.Fprintf(&b, "\nlast error: %s", snap.Errors[n-1])
-	}
+	// snap.Errors is never included: its entries carry message IDs, request
+	// URLs, and response snippets, and ntfy bodies are counts/status only
+	// (topics on the public server are readable by anyone who knows the name).
+	// The failed count above is the remote-visible signal.
 
 	m := ntfyMessage{
 		title:    fmt.Sprintf("discord-delete %s · %.0f%%", state, pct),
