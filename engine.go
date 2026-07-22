@@ -215,33 +215,47 @@ type limiter struct {
 // gate blocks until this request is allowed to fire (respecting both the global
 // pause window and the account-wide spacing). Returns false if ctx is done.
 func (l *limiter) gate(ctx context.Context) bool {
-	// Respect a user-controlled pause (hotkey) first, holding here until resumed.
-	for l.paused.Load() {
-		if !sleepCtx(ctx, 150*time.Millisecond) {
-			return false
-		}
-	}
-	// Respect a global-429 pause next.
-	if until := l.pauseUntilMs.Load(); until > 0 {
-		if d := time.Until(time.UnixMilli(until)); d > 0 {
-			if !sleepCtx(ctx, d) {
+	for {
+		// Respect a user-controlled pause (hotkey) first, holding here until resumed.
+		for l.paused.Load() {
+			if !sleepCtx(ctx, 150*time.Millisecond) {
 				return false
 			}
 		}
+		// Respect a global-429 pause next.
+		if until := l.pauseUntilMs.Load(); until > 0 {
+			if d := time.Until(time.UnixMilli(until)); d > 0 {
+				if !sleepCtx(ctx, d) {
+					return false
+				}
+			}
+		}
+		// Account-wide spacing.
+		l.mu.Lock()
+		now := time.Now()
+		wait := time.Duration(0)
+		if now.Before(l.next) {
+			wait = l.next.Sub(now)
+		}
+		l.next = now.Add(wait).Add(l.minInterval)
+		l.mu.Unlock()
+		if wait > 0 {
+			if !sleepCtx(ctx, wait) {
+				return false
+			}
+		}
+		// A pause that arrived while this worker slept on its spacing slot must
+		// still be honored: firing now would land the request inside the pause
+		// window (defeating pauseGlobal's all-workers promise), so loop back and
+		// wait it out. The extra slot taken on the retry only widens spacing.
+		if l.paused.Load() {
+			continue
+		}
+		if until := l.pauseUntilMs.Load(); until > 0 && time.Now().UnixMilli() < until {
+			continue
+		}
+		return true
 	}
-	// Account-wide spacing.
-	l.mu.Lock()
-	now := time.Now()
-	wait := time.Duration(0)
-	if now.Before(l.next) {
-		wait = l.next.Sub(now)
-	}
-	l.next = now.Add(wait).Add(l.minInterval)
-	l.mu.Unlock()
-	if wait > 0 {
-		return sleepCtx(ctx, wait)
-	}
-	return true
 }
 
 // pauseGlobal parks every worker until now+d. Concurrent callers take the

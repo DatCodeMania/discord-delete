@@ -52,6 +52,48 @@ func TestLimiterPauseReleasesOnCancel(t *testing.T) {
 	}
 }
 
+// A global-429 pause that lands while a worker is already sleeping on its
+// account-wide spacing slot must still be honored: the request may not fire
+// inside the pause window.
+func TestLimiterGateHonorsPauseArrivingMidSlot(t *testing.T) {
+	l := &limiter{minInterval: 300 * time.Millisecond}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Take the first slot so the next gate call sleeps on spacing.
+	if !l.gate(ctx) {
+		t.Fatal("first gate should pass")
+	}
+
+	got := make(chan bool, 1)
+	go func() { got <- l.gate(ctx) }()
+
+	// Land the pause while the worker sleeps on its ~300ms spacing slot.
+	time.Sleep(100 * time.Millisecond)
+	l.pauseGlobal(1200 * time.Millisecond)
+	pauseEnd := time.Now().Add(1200 * time.Millisecond)
+
+	// Well past the spacing slot but well inside the pause window: the old
+	// code would already have fired here.
+	select {
+	case <-got:
+		t.Fatal("gate fired inside the pause window")
+	case <-time.After(700 * time.Millisecond):
+	}
+
+	select {
+	case ok := <-got:
+		if !ok {
+			t.Fatal("gate should return true once the pause expires")
+		}
+		if time.Now().Before(pauseEnd.Add(-50 * time.Millisecond)) {
+			t.Fatal("gate returned before the pause window ended")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("gate never returned after the pause expired")
+	}
+}
+
 func TestTogglePaused(t *testing.T) {
 	e := NewEngine(EngineConfig{Workers: 1, DeleteDelay: time.Second}, NewStats(0, 1))
 	if e.isPaused() {
