@@ -555,16 +555,8 @@ func (m *appModel) updateHome(msg tea.Msg) (tea.Model, tea.Cmd) {
 // one Discord has already told us is invalid).
 func (m *appModel) toggleExecute() {
 	if !m.cfg.execute {
-		if strings.TrimSpace(m.cfg.token) == "" {
-			m.perr = "Execute needs a token. Set it in Configure, or pass --token / DISCORD_TOKEN."
-			return
-		}
-		if m.tokenState == tsInvalid {
-			m.perr = "That token is invalid or expired. Fix it in Configure before executing."
-			return
-		}
-		if m.ownerMismatch() {
-			m.perr = m.mismatchNote()
+		if reason := m.executeGuard(); reason != "" {
+			m.perr = reason
 			return
 		}
 	}
@@ -582,12 +574,8 @@ func (m *appModel) startRun() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.cfg.execute {
-		if strings.TrimSpace(m.cfg.token) == "" {
-			m.perr = "Execute needs a token. Set it in Configure."
-			return m, nil
-		}
-		if m.ownerMismatch() {
-			m.perr = m.mismatchNote()
+		if reason := m.executeGuard(); reason != "" {
+			m.perr = reason
 			return m, nil
 		}
 		m.screen = scConfirm
@@ -937,6 +925,14 @@ func (m *appModel) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	switch key.String() {
 	case "y", "Y":
+		// Re-run the execute guard: the async token probe may have resolved to
+		// invalid or account-mismatched while this confirm screen was open, and
+		// the pre-confirm check in startRun would then be stale.
+		if reason := m.executeGuard(); reason != "" {
+			m.perr = reason
+			m.screen = scHome
+			return m, nil
+		}
 		return m.launchEngine()
 	case "n", "N", "esc", "q":
 		m.screen = scHome

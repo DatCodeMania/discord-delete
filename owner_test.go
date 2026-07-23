@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestReadPackageOwner(t *testing.T) {
@@ -96,5 +98,50 @@ func TestMismatchBlocksExecute(t *testing.T) {
 	m.startRun()
 	if m.screen == scConfirm {
 		t.Fatal("start must not proceed to confirm on an owner mismatch")
+	}
+}
+
+// The token probe is async, so it can resolve to invalid or account-mismatched
+// while the confirm screen is already open. Pressing "y" must re-run the guard
+// and refuse, not launch a real run against the wrong (or a dead) account.
+func TestConfirmRechecksTokenGuard(t *testing.T) {
+	// A token that was valid and matched when the confirm screen opened.
+	newModel := func() *appModel {
+		m := demoModel()
+		m.cfg.execute = true
+		m.cfg.token = "sometoken"
+		m.tokenState, m.tokenUser, m.tokenID = tsValid, "user1", "111"
+		m.ownerID, m.ownerName = "111", "user1"
+		m.screen = scConfirm
+		return m
+	}
+	pressY := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}}
+
+	// A late probe flips the token to invalid.
+	m := newModel()
+	m.tokenState = tsInvalid
+	m.updateConfirm(pressY)
+	if m.screen == scRunning || m.started {
+		t.Fatal("y must not launch when the token turned invalid on the confirm screen")
+	}
+	if m.perr == "" {
+		t.Fatal("expected an explanatory error after refusing on an invalid token")
+	}
+
+	// A late probe resolves to a different account.
+	m = newModel()
+	m.tokenID, m.tokenUser = "222", "user2"
+	m.updateConfirm(pressY)
+	if m.screen == scRunning || m.started {
+		t.Fatal("y must not launch when the account no longer matches on the confirm screen")
+	}
+
+	// The happy path still launches.
+	m = newModel()
+	if _, cmd := m.updateConfirm(pressY); cmd == nil {
+		t.Fatal("y should launch the run when the guard still passes")
+	}
+	if !m.started {
+		t.Fatal("a valid, matching token must reach the running screen on y")
 	}
 }

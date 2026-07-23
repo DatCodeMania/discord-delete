@@ -181,6 +181,26 @@ func (m *appModel) applyTokenCheck(msg tokenCheckMsg) {
 	}
 }
 
+// executeGuard returns the reason a real (execute) run must not proceed, or ""
+// if the token and account checks pass. It is the single gate for every path
+// into a live run: toggleExecute before flipping into execute, startRun before
+// opening the confirm screen, and updateConfirm again on "y". That last re-check
+// matters because the token probe is async: a probe that lands while the confirm
+// screen is open (turning the account invalid or mismatched) would otherwise be
+// bypassed, spending a run's requests on the wrong account.
+func (m *appModel) executeGuard() string {
+	if strings.TrimSpace(m.cfg.token) == "" {
+		return "Execute needs a token. Set it in Configure, or pass --token / DISCORD_TOKEN."
+	}
+	if m.tokenState == tsInvalid {
+		return "That token is invalid or expired. Fix it in Configure before executing."
+	}
+	if m.ownerMismatch() {
+		return m.mismatchNote()
+	}
+	return ""
+}
+
 // ownerMismatch reports whether we KNOW the token's account differs from the
 // package's owner. It only fires when both identities are known, so a package
 // without account/user.json (or a token not yet checked) never blocks.
