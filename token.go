@@ -52,9 +52,12 @@ type tokenIdentity struct {
 // belongs to. The token is only ever sent to Discord over HTTPS; it is never
 // logged or written anywhere.
 func fetchTokenIdentity(ctx context.Context, token string) tokenIdentity {
-	token = strings.TrimSpace(token)
+	token = normalizeToken(token)
 	if token == "" {
 		return tokenIdentity{state: tsNone}
+	}
+	if hasNonTokenChar(token) {
+		return tokenIdentity{state: tsInvalid, err: "This token has characters that aren't part of a Discord token, so the paste was mangled. Re-copy it, or use Browser sign-in."}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiBaseURL()+"/users/@me", nil)
 	if err != nil {
@@ -175,6 +178,18 @@ func normalizeToken(s string) string {
 		}
 	}
 	return s
+}
+
+func hasNonTokenChar(s string) bool {
+	for _, r := range s {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+		case r == '.', r == '-', r == '_', r == '+', r == '/', r == '=':
+		default:
+			return true
+		}
+	}
+	return false
 }
 
 // uniqueHandle is the account's unique @username (or legacy username#discriminator),

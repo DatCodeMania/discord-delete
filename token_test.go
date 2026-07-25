@@ -24,6 +24,32 @@ func TestNormalizeToken(t *testing.T) {
 	}
 }
 
+func TestHasNonTokenChar(t *testing.T) {
+	valid := []string{
+		"aB3-x9_Q.Yz-2c.aB_cd-19XyZ", // base64url shape, incl. - and _
+		"mfa.abcDEF012_-",            // legacy mfa shape
+		"abc123._-+/=",               // full allowed superset
+	}
+	for _, v := range valid {
+		if hasNonTokenChar(v) {
+			t.Errorf("hasNonTokenChar(%q) = true, want false (real tokens must never be flagged)", v)
+		}
+	}
+	mangled := []string{
+		"abc def.ghi.jkl", // space (truncated/multi-line paste)
+		"abc\tdef",        // tab
+		"abc\ndef",        // newline
+		"abc def",         // non-breaking space from a web copy
+		"abcé.def",        // non-ascii
+		`abc"def`,         // stray quote
+	}
+	for _, m := range mangled {
+		if !hasNonTokenChar(m) {
+			t.Errorf("hasNonTokenChar(%q) = false, want true (mangled paste)", m)
+		}
+	}
+}
+
 func TestFriendlyUser(t *testing.T) {
 	cases := []struct{ user, disc, global, want string }{
 		{"alice", "0", "Alice A.", "Alice A."}, // new scheme with a display name
