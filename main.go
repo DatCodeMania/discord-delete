@@ -167,7 +167,7 @@ func main() {
 		delay:       *delay,
 		jitter:      *jitter,
 		maxRPS:      clampFloat(*maxRPS, 1, 49),
-		token:       strings.TrimSpace(tok),
+		token:       normalizeToken(tok),
 		execute:     *execute,
 		ntfy:        strings.TrimSpace(ntfy),
 		notifyEvery: notifyEvery,

@@ -6,6 +6,24 @@ import (
 	"testing"
 )
 
+func TestNormalizeToken(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"  abc.def.ghi  ", "abc.def.ghi"},
+		{`"abc.def.ghi"`, "abc.def.ghi"},
+		{"'abc.def.ghi'", "abc.def.ghi"},
+		{` "abc.def.ghi" `, "abc.def.ghi"},
+		{`abc"def`, `abc"def`},             // unwrapped inner quote, untouched
+		{`"abc.def.ghi'`, `"abc.def.ghi'`}, // mismatched quotes, left as-is
+		{"", ""},
+		{`""`, ""},
+	}
+	for _, c := range cases {
+		if got := normalizeToken(c.in); got != c.want {
+			t.Errorf("normalizeToken(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 func TestFriendlyUser(t *testing.T) {
 	cases := []struct{ user, disc, global, want string }{
 		{"alice", "0", "Alice A.", "Alice A."}, // new scheme with a display name

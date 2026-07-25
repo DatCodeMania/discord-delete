@@ -448,7 +448,7 @@ func (m *appModel) commitEdit(id, val string) {
 			m.perr = err.Error()
 		}
 	case "token":
-		m.cfg.token = val
+		m.cfg.token = normalizeToken(val)
 	case "workers":
 		if n, err := strconv.Atoi(val); err == nil {
 			m.cfg.workers = clampInt(n, 1, 64)

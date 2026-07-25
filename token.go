@@ -164,6 +164,19 @@ func friendlyUser(username, discriminator, global string) string {
 	return username
 }
 
+// normalizeToken trims whitespace and one pair of wrapping quotes. A Discord
+// token never starts or ends with a quote, so stripping them is safe and undoes
+// a common devtools/localStorage copy-paste mistake.
+func normalizeToken(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) >= 2 {
+		if f, l := s[0], s[len(s)-1]; (f == '"' && l == '"') || (f == '\'' && l == '\'') {
+			s = strings.TrimSpace(s[1 : len(s)-1])
+		}
+	}
+	return s
+}
+
 // uniqueHandle is the account's unique @username (or legacy username#discriminator),
 // as opposed to friendlyUser's non-unique display name. Empty if no username.
 func uniqueHandle(username, discriminator string) string {
@@ -274,7 +287,7 @@ func (m *appModel) applyBrowserSignin(msg browserSigninMsg) tea.Cmd {
 		return nil
 	}
 	m.browserErr = ""
-	m.cfg.token = strings.TrimSpace(msg.token)
+	m.cfg.token = normalizeToken(msg.token)
 	return m.startTokenCheck()
 }
 
