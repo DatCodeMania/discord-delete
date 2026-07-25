@@ -88,7 +88,7 @@ func fetchTokenIdentity(ctx context.Context, token string) tokenIdentity {
 			state:  tsValid,
 		}
 	case 401:
-		return tokenIdentity{state: tsInvalid, err: "invalid or expired token"}
+		return tokenIdentity{state: tsInvalid, err: "Discord rejected this token (401). Usually: copied with extra characters, or it has expired. Try Browser sign-in."}
 	case 429:
 		return tokenIdentity{state: tsError, err: "rate-limited while checking; token may still be fine"}
 	default:
@@ -251,9 +251,11 @@ func accountLabel(handle, name, id string) string {
 }
 
 func (m *appModel) mismatchNote() string {
-	owner := accountLabel(m.ownerHandle, m.ownerName, m.ownerID)
-	who := accountLabel(m.tokenHandle, m.tokenUser, m.tokenID)
-	return "Wrong account: this package belongs to " + owner + ", not " + who + ". Sign in as " + owner + "."
+	exportedBy := accountLabel(m.ownerHandle, m.ownerName, m.ownerID)
+	signedInAs := accountLabel(m.tokenHandle, m.tokenUser, m.tokenID)
+	return "This package was exported by " + exportedBy + ". Your token is " + signedInAs +
+		". A package can only be cleared by the account that made it. Sign in as " + exportedBy +
+		", or request a fresh export from " + signedInAs + "."
 }
 
 // startBrowserSignin kicks off the Chrome-launch capture flow, marking it active
@@ -313,7 +315,7 @@ func (m *appModel) tokenStatusLine() string {
 		if m.ownerMismatch() {
 			return stRed.Render("✗ " + m.mismatchNote())
 		}
-		return stGreen.Render("✓ token valid, logged in as " + m.tokenUser)
+		return stGreen.Render("✓ signed in as " + accountLabel(m.tokenHandle, m.tokenUser, m.tokenID))
 	case tsInvalid:
 		return stRed.Render("✗ " + cmp.Or(m.tokenErr, "invalid token"))
 	case tsError:

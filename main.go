@@ -374,10 +374,10 @@ func runPlain(in plainRun) {
 		id := fetchTokenIdentity(ctx, cfg.token)
 		cancel()
 		if id.state == tsValid && id.id != "" && id.id != in.owner.ID {
-			ownerH := accountLabel(in.owner.Handle, in.owner.Name, in.owner.ID)
-			tokH := accountLabel(id.handle, id.name, id.id)
-			fmt.Fprintf(os.Stderr, "error: wrong account: this package belongs to %s, not %s. Sign in as %s.\n",
-				ownerH, tokH, ownerH)
+			exportedBy := accountLabel(in.owner.Handle, in.owner.Name, in.owner.ID)
+			signedInAs := accountLabel(id.handle, id.name, id.id)
+			fmt.Fprintf(os.Stderr, "error: wrong account. This package was exported by %s, but your token is %s. A package can only be cleared by the account that made it. Sign in as %s, or request a fresh export from %s.\n",
+				exportedBy, signedInAs, exportedBy, signedInAs)
 			os.Exit(2)
 		}
 	}

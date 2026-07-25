@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"sort"
@@ -196,7 +197,7 @@ func (m *appModel) fieldValue(id string) string {
 		case tsChecking:
 			return "•••••••• checking…"
 		case tsValid:
-			return "•••••••• ✓ " + m.tokenUser
+			return "•••••••• ✓ " + cmp.Or(m.tokenHandle, m.tokenUser)
 		case tsInvalid:
 			return "•••••••• ✗ invalid"
 		case tsError:
