@@ -34,15 +34,17 @@ type tokenCheckMsg struct {
 	token  string
 	userID string
 	user   string
+	handle string
 	state  tokenState
 	err    string
 }
 
 type tokenIdentity struct {
-	id    string
-	name  string
-	state tokenState
-	err   string
+	id     string
+	name   string
+	handle string
+	state  tokenState
+	err    string
 }
 
 // fetchTokenIdentity makes exactly one /users/@me request, the same
@@ -79,7 +81,12 @@ func fetchTokenIdentity(ctx context.Context, token string) tokenIdentity {
 			GlobalName    string `json:"global_name"`
 		}
 		_ = json.Unmarshal(body, &u)
-		return tokenIdentity{id: u.ID, name: friendlyUser(u.Username, u.Discriminator, u.GlobalName), state: tsValid}
+		return tokenIdentity{
+			id:     u.ID,
+			name:   friendlyUser(u.Username, u.Discriminator, u.GlobalName),
+			handle: uniqueHandle(u.Username, u.Discriminator),
+			state:  tsValid,
+		}
 	case 401:
 		return tokenIdentity{state: tsInvalid, err: "invalid or expired token"}
 	case 429:
@@ -138,7 +145,7 @@ func checkTokenCmd(token string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		id := fetchTokenIdentity(ctx, token)
-		return tokenCheckMsg{token: token, userID: id.id, user: id.name, state: id.state, err: id.err}
+		return tokenCheckMsg{token: token, userID: id.id, user: id.name, handle: id.handle, state: id.state, err: id.err}
 	}
 }
 
@@ -157,15 +164,28 @@ func friendlyUser(username, discriminator, global string) string {
 	return username
 }
 
+// uniqueHandle is the account's unique @username (or legacy username#discriminator),
+// as opposed to friendlyUser's non-unique display name. Empty if no username.
+func uniqueHandle(username, discriminator string) string {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return ""
+	}
+	if discriminator != "" && discriminator != "0" {
+		return username + "#" + discriminator
+	}
+	return username
+}
+
 // startTokenCheck sets the checking state for the current token and returns the
 // probe command (or clears state and returns nil for an empty token).
 func (m *appModel) startTokenCheck() tea.Cmd {
 	tok := strings.TrimSpace(m.cfg.token)
 	if tok == "" {
-		m.tokenState, m.tokenUser, m.tokenErr = tsNone, "", ""
+		m.tokenState, m.tokenUser, m.tokenErr, m.tokenID, m.tokenHandle = tsNone, "", "", "", ""
 		return nil
 	}
-	m.tokenState, m.tokenUser, m.tokenErr, m.tokenID = tsChecking, "", "", ""
+	m.tokenState, m.tokenUser, m.tokenErr, m.tokenID, m.tokenHandle = tsChecking, "", "", "", ""
 	return checkTokenCmd(tok)
 }
 
@@ -175,7 +195,7 @@ func (m *appModel) applyTokenCheck(msg tokenCheckMsg) {
 	if strings.TrimSpace(m.cfg.token) != strings.TrimSpace(msg.token) {
 		return
 	}
-	m.tokenState, m.tokenUser, m.tokenErr, m.tokenID = msg.state, msg.user, msg.err, msg.userID
+	m.tokenState, m.tokenUser, m.tokenErr, m.tokenID, m.tokenHandle = msg.state, msg.user, msg.err, msg.userID, msg.handle
 	if m.tokenState == tsValid {
 		m.maybeSaveToken()
 	}
@@ -208,15 +228,18 @@ func (m *appModel) ownerMismatch() bool {
 	return m.ownerID != "" && m.tokenID != "" && m.ownerID != m.tokenID
 }
 
+// accountLabel formats an account as "handle (id)", falling back to the display
+// name, then the bare id, when the handle is missing.
+func accountLabel(handle, name, id string) string {
+	if h := cmp.Or(handle, name); h != "" {
+		return h + " (" + id + ")"
+	}
+	return id
+}
+
 func (m *appModel) mismatchNote() string {
-	owner := m.ownerName
-	if owner == "" {
-		owner = "someone else"
-	}
-	who := m.tokenUser
-	if who == "" {
-		who = "this token"
-	}
+	owner := accountLabel(m.ownerHandle, m.ownerName, m.ownerID)
+	who := accountLabel(m.tokenHandle, m.tokenUser, m.tokenID)
 	return "Wrong account: this package belongs to " + owner + ", not " + who + ". Sign in as " + owner + "."
 }
 

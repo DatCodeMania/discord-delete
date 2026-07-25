@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -26,6 +27,58 @@ func TestReadPackageOwner(t *testing.T) {
 	}
 	if owner.Name != "User One" {
 		t.Fatalf("owner name: want 'User One', got %q", owner.Name)
+	}
+	if owner.Handle != "user1" {
+		t.Fatalf("owner handle: want 'user1', got %q", owner.Handle)
+	}
+}
+
+func TestUniqueHandle(t *testing.T) {
+	cases := []struct{ user, discrim, want string }{
+		{"alice", "0", "alice"},
+		{"alice", "", "alice"},
+		{"bob", "1234", "bob#1234"},
+		{"  spaced  ", "0", "spaced"},
+		{"", "0", ""},
+	}
+	for _, c := range cases {
+		if got := uniqueHandle(c.user, c.discrim); got != c.want {
+			t.Errorf("uniqueHandle(%q,%q) = %q, want %q", c.user, c.discrim, got, c.want)
+		}
+	}
+}
+
+// A shared display name (global_name is not unique) must not collapse the note
+// to "belongs to X, not X"; both accounts are named by unique handle and id.
+func TestMismatchNoteDisambiguatesSameDisplayName(t *testing.T) {
+	m := demoModel()
+	m.ownerID, m.ownerName, m.ownerHandle = "111", "Sam", "sam_original"
+	m.tokenID, m.tokenUser, m.tokenHandle = "222", "Sam", "sam_alt"
+	m.tokenState = tsValid
+
+	note := m.mismatchNote()
+	for _, want := range []string{"sam_original (111)", "sam_alt (222)"} {
+		if !strings.Contains(note, want) {
+			t.Fatalf("note missing %q, got %q", want, note)
+		}
+	}
+	if strings.Contains(note, "belongs to Sam, not Sam") {
+		t.Fatalf("note should not show identical display names, got %q", note)
+	}
+}
+
+// No recorded handle falls back to the display name, still tagged with the id.
+func TestMismatchNoteFallsBackToName(t *testing.T) {
+	m := demoModel()
+	m.ownerID, m.ownerName, m.ownerHandle = "111", "Owner", ""
+	m.tokenID, m.tokenUser, m.tokenHandle = "222", "Tokener", ""
+	m.tokenState = tsValid
+
+	note := m.mismatchNote()
+	for _, want := range []string{"Owner (111)", "Tokener (222)"} {
+		if !strings.Contains(note, want) {
+			t.Fatalf("note missing %q, got %q", want, note)
+		}
 	}
 }
 

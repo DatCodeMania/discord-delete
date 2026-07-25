@@ -82,14 +82,16 @@ type appModel struct {
 	advanced bool
 
 	// token validation (async /users/@me probe)
-	tokenState tokenState
-	tokenUser  string
-	tokenErr   string
-	tokenID    string // the token account's user id (for owner-match check)
+	tokenState  tokenState
+	tokenUser   string
+	tokenErr    string
+	tokenID     string // the token account's user id (for owner-match check)
+	tokenHandle string // unique @handle, for the mismatch note
 
 	// package owner (from account/user.json); "" if the package didn't record it
-	ownerID   string
-	ownerName string
+	ownerID     string
+	ownerName   string
+	ownerHandle string // unique @handle, for the mismatch note
 
 	// update notice (async; see update.go)
 	updateCh   <-chan string

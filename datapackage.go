@@ -304,8 +304,9 @@ func (r rawChannel) guildIDName() (string, string) {
 // the package's own account/user.json. Used to make sure the token you're about
 // to delete with is actually this package's account.
 type PackageOwner struct {
-	ID   string
-	Name string
+	ID     string
+	Name   string
+	Handle string // unique @username
 }
 
 // LoadPackageOwner reads account/user.json from the package to learn whose
@@ -371,7 +372,11 @@ func parseOwnerFile(fsys fs.FS, p string) (PackageOwner, bool) {
 	if json.Unmarshal(data, &u) != nil || u.ID == "" {
 		return PackageOwner{}, false
 	}
-	return PackageOwner{ID: u.ID, Name: friendlyUser(u.Username, u.Discriminator, u.GlobalName)}, true
+	return PackageOwner{
+		ID:     u.ID,
+		Name:   friendlyUser(u.Username, u.Discriminator, u.GlobalName),
+		Handle: uniqueHandle(u.Username, u.Discriminator),
+	}, true
 }
 
 // LoadRawPackage reads a Discord data package (a .zip or an already-extracted

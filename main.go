@@ -229,7 +229,7 @@ func main() {
 
 	model := newAppModel(raws, cfg, sel, filepath.Base(*pkgPath))
 	model.updateCh = updateCh
-	model.ownerID, model.ownerName = owner.ID, owner.Name
+	model.ownerID, model.ownerName, model.ownerHandle = owner.ID, owner.Name, owner.Handle
 	model.progPath, model.done = progPath, done
 	model.stateKey = stateKey
 	model.tokenFromStore = loadedFromStore
@@ -374,8 +374,10 @@ func runPlain(in plainRun) {
 		id := fetchTokenIdentity(ctx, cfg.token)
 		cancel()
 		if id.state == tsValid && id.id != "" && id.id != in.owner.ID {
-			fmt.Fprintf(os.Stderr, "error: this package belongs to %s, but the token is %s's. Use %s's account.\n",
-				in.owner.Name, id.name, in.owner.Name)
+			ownerH := accountLabel(in.owner.Handle, in.owner.Name, in.owner.ID)
+			tokH := accountLabel(id.handle, id.name, id.id)
+			fmt.Fprintf(os.Stderr, "error: wrong account: this package belongs to %s, not %s. Sign in as %s.\n",
+				ownerH, tokH, ownerH)
 			os.Exit(2)
 		}
 	}
