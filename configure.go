@@ -44,7 +44,7 @@ var primaryFields = []cfField{
 	{id: "channels", label: "Channels", kind: cfAction,
 		help: "Pick which servers and DMs to include. Enter opens the selector."},
 	{id: "token", label: "Token", kind: cfText, masked: true,
-		help: "Your Discord user token, required only to actually delete. Obtain via README guide or Browser sign-in."},
+		help: "Your Discord user token, required only to actually delete. Obtain via Browser sign-in or manually."},
 	{id: "browser", label: "Browser sign-in", kind: cfAction,
 		help: "Launch a browser (Chrome/Chromium/Edge/Brave) and log into Discord normally; your token is captured automatically. Throwaway profile. Requires a Chromium-based browser."},
 	{id: "remember", label: "Remember token", kind: cfToggle,
