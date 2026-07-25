@@ -82,6 +82,29 @@ func TestMismatchNoteFallsBackToName(t *testing.T) {
 	}
 }
 
+// Current Discord exports store discriminator as a bare number, not a string.
+// The owner must still parse, or the account-match guard silently disables.
+func TestReadPackageOwnerNumericDiscriminator(t *testing.T) {
+	root := t.TempDir()
+	acct := filepath.Join(root, "account")
+	if err := os.MkdirAll(acct, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(acct, "user.json"),
+		`{"id":"777888999","username":"migrated","discriminator":0,"global_name":"Migrated"}`)
+
+	owner, ok := LoadPackageOwner(root)
+	if !ok {
+		t.Fatal("expected owner to parse with a numeric discriminator")
+	}
+	if owner.ID != "777888999" {
+		t.Fatalf("owner id: want 777888999, got %q", owner.ID)
+	}
+	if owner.Handle != "migrated" {
+		t.Fatalf("owner handle: want 'migrated', got %q", owner.Handle)
+	}
+}
+
 func TestReadPackageOwnerMissing(t *testing.T) {
 	root := t.TempDir() // no account/user.json
 	if _, ok := LoadPackageOwner(root); ok {

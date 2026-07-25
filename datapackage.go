@@ -363,19 +363,24 @@ func parseOwnerFile(fsys fs.FS, p string) (PackageOwner, bool) {
 	if err != nil {
 		return PackageOwner{}, false
 	}
-	var u struct {
-		ID            string `json:"id"`
-		Username      string `json:"username"`
-		GlobalName    string `json:"global_name"`
-		Discriminator string `json:"discriminator"`
-	}
-	if json.Unmarshal(data, &u) != nil || u.ID == "" {
+	// Current exports store discriminator as a bare number ("0"), older ones as a
+	// string; decode every field through firstString so a type mismatch on one
+	// does not drop the whole owner and silently disable the account-match guard.
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(data, &raw) != nil {
 		return PackageOwner{}, false
 	}
+	id := firstString(raw, "id")
+	if id == "" {
+		return PackageOwner{}, false
+	}
+	username := firstString(raw, "username")
+	discriminator := firstString(raw, "discriminator")
+	global := firstString(raw, "global_name")
 	return PackageOwner{
-		ID:     u.ID,
-		Name:   friendlyUser(u.Username, u.Discriminator, u.GlobalName),
-		Handle: uniqueHandle(u.Username, u.Discriminator),
+		ID:     id,
+		Name:   friendlyUser(username, discriminator, global),
+		Handle: uniqueHandle(username, discriminator),
 	}, true
 }
 
