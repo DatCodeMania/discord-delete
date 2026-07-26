@@ -352,40 +352,38 @@ func LoadPackageOwner(pkgPath string) (PackageOwner, bool) {
 }
 
 func readPackageOwner(fsys fs.FS) (PackageOwner, bool) {
-	// Find the owner file by walking the tree, exactly like the message loader,
-	// not by exact root paths. Discord packages are sometimes nested under a
-	// wrapper directory (a zip that wraps everything, or extraction into a
-	// subfolder); an exact-path read would miss the owner while the recursive
-	// message scan still succeeds, silently losing identity (and stable
-	// resume/config keying). Prefer an `account/user.json` match, then any
-	// `user.json`, shallowest first.
-	var accountMatch, looseMatch string
+	// Only account/user.json: other user.json files (e.g. Activities) carry an
+	// analytics UUID, not the Discord id. Walked, not read at a fixed root, since
+	// packages may be nested under a wrapper dir.
+	var accountMatch string
 	_ = fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
 		}
-		lp := strings.ToLower(p)
-		switch {
-		case strings.HasSuffix(lp, "account/user.json"):
+		if strings.HasSuffix(strings.ToLower(p), "account/user.json") {
 			if accountMatch == "" || len(p) < len(accountMatch) {
 				accountMatch = p
-			}
-		case strings.ToLower(d.Name()) == "user.json":
-			if looseMatch == "" || len(p) < len(looseMatch) {
-				looseMatch = p
 			}
 		}
 		return nil
 	})
-	for _, p := range []string{accountMatch, looseMatch} {
-		if p == "" {
-			continue
-		}
-		if owner, ok := parseOwnerFile(fsys, p); ok {
-			return owner, true
+	if accountMatch == "" {
+		return PackageOwner{}, false
+	}
+	return parseOwnerFile(fsys, accountMatch)
+}
+
+// isSnowflakeID reports whether s is a Discord snowflake (all digits, non-empty).
+func isSnowflakeID(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
 		}
 	}
-	return PackageOwner{}, false
+	return true
 }
 
 func parseOwnerFile(fsys fs.FS, p string) (PackageOwner, bool) {
@@ -401,7 +399,7 @@ func parseOwnerFile(fsys fs.FS, p string) (PackageOwner, bool) {
 		return PackageOwner{}, false
 	}
 	id := firstString(raw, "id")
-	if id == "" {
+	if !isSnowflakeID(id) { // reject a UUID or other non-Discord id
 		return PackageOwner{}, false
 	}
 	username := firstString(raw, "username")

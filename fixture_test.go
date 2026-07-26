@@ -77,6 +77,35 @@ func TestFixturePartialUnknownServer(t *testing.T) {
 	}
 }
 
+// An account-less export whose only user.json is an Activities record (UUID id,
+// the real discord_id under a separate field) must NOT attribute an owner:
+// binding to the UUID falsely tripped the account guard on the correct account.
+func TestFixtureActivitiesUUIDNotOwner(t *testing.T) {
+	if _, ok := LoadPackageOwner("testdata/packages/activities-no-account"); ok {
+		t.Fatal("must not attribute owner from an Activities users/user.json (UUID id)")
+	}
+	raws, err := LoadRawPackage("testdata/packages/activities-no-account")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(raws) != 1 {
+		t.Fatalf("channels: want 1, got %d", len(raws))
+	}
+}
+
+func TestIsSnowflakeID(t *testing.T) {
+	for _, s := range []string{"938762267049218128", "111", "0"} {
+		if !isSnowflakeID(s) {
+			t.Errorf("%q should be a snowflake", s)
+		}
+	}
+	for _, s := range []string{"", "12345678-1234-1234-1234-123456789abc", "abc", "12a3", " 123"} {
+		if isSnowflakeID(s) {
+			t.Errorf("%q should not be a snowflake", s)
+		}
+	}
+}
+
 func TestChannelTypeUnmarshal(t *testing.T) {
 	cases := []struct {
 		in     string
