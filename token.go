@@ -231,8 +231,8 @@ func (m *appModel) applyTokenCheck(msg tokenCheckMsg) {
 }
 
 // executeGuard returns the reason a real (execute) run must not proceed, or ""
-// if the token and account checks pass. It is the single gate for every path
-// into a live run: toggleExecute before flipping into execute, startRun before
+// if the token, account, and resume-log checks pass. It is the single gate for
+// every path into a live run: toggleExecute before flipping into execute, startRun before
 // opening the confirm screen, and updateConfirm again on "y". That last re-check
 // matters because the token probe is async: a probe that lands while the confirm
 // screen is open (turning the account invalid or mismatched) would otherwise be
@@ -246,6 +246,19 @@ func (m *appModel) executeGuard() string {
 	}
 	if m.ownerMismatch() {
 		return m.mismatchNote()
+	}
+	// An execute run must be resumable: without a working log every deletion
+	// would be re-attempted by the next run, so refuse rather than run blind.
+	for _, lg := range []struct {
+		on   bool
+		path string
+	}{{m.cfg.delMessages, m.progPath}, {m.cfg.delReactions, m.reactProgPath}} {
+		if !lg.on || lg.path == "" {
+			continue
+		}
+		if err := probeProgressLog(lg.path); err != nil {
+			return "Cannot open the resume log (" + err.Error() + "). Deletions would not be recorded, and the next run would repeat all of them. Point DISCORD_DELETE_STATE_DIR at a writable directory."
+		}
 	}
 	return ""
 }

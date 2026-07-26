@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -154,5 +155,43 @@ func TestCountInSet(t *testing.T) {
 	}}}
 	if n := countInSet(raws, map[string]bool{"100": true, "300": true, "999": true}); n != 2 {
 		t.Fatalf("countInSet: want 2 (only 100,300 are in the package), got %d", n)
+	}
+}
+
+// After an append fails, the error is surfaced through writeErr and later
+// records are dropped rather than silently pretended written; records flushed
+// before the failure survive on disk.
+func TestProgressLogSurfacesWriteFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "deleted.log")
+	pl, err := openProgressLog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pl.record("111")
+	pl.f.Close() // kill the file under the writer, as a full or yanked disk would
+	pl.record("222")
+	if pl.writeErr() == nil {
+		t.Fatal("a failed append must surface through writeErr")
+	}
+	pl.close()
+	if pl.writeErr() == nil {
+		t.Fatal("writeErr must persist after close")
+	}
+	if set := loadProgressSet(path); !set["111"] || set["222"] {
+		t.Fatalf("want only the pre-failure record on disk, got %v", set)
+	}
+}
+
+func TestProbeProgressLog(t *testing.T) {
+	dir := t.TempDir()
+	if err := probeProgressLog(filepath.Join(dir, "sub", "x.deleted.log")); err != nil {
+		t.Fatalf("probe should pass for a creatable log: %v", err)
+	}
+	blocker := filepath.Join(dir, "f")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if probeProgressLog(filepath.Join(blocker, "x.deleted.log")) == nil {
+		t.Fatal("probe should fail when the log directory cannot be created")
 	}
 }

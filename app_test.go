@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -320,5 +321,68 @@ func TestFinishRunReloadsReactionResume(t *testing.T) {
 	m.finishRun()
 	if !m.reactDone["111|222|u:x"] {
 		t.Fatal("finishRun should reload the reaction resume set")
+	}
+}
+
+// A stop during an earlier phase cancels the run context, so the tick must
+// finalize the run instead of starting the next phase on the dead context.
+func TestStopDuringPhaseDoesNotStartNextPhase(t *testing.T) {
+	t.Setenv("DISCORD_DELETE_STATE_DIR", t.TempDir())
+	m := demoModel()
+	m.screen = scRunning
+	m.phases = []phasePlan{{kind: "messages"}, {kind: "reactions"}}
+	m.phaseIdx = 0
+	m.stats = NewStats(4, 1)
+	m.stats.finished.Store(true) // engine wound down after a stop: neither completed nor aborted
+	_, _ = m.Update(tickMsg{})
+	if !m.reported {
+		t.Fatal("a stopped run must finalize, not advance to the next phase")
+	}
+	if m.phaseIdx != 0 {
+		t.Fatalf("phaseIdx advanced to %d after a stop", m.phaseIdx)
+	}
+	if len(m.phaseResults) != 1 {
+		t.Fatalf("want the stopped phase's result recorded once, got %d", len(m.phaseResults))
+	}
+}
+
+// A phase that completed normally still advances to the next one.
+func TestCompletedPhaseAdvances(t *testing.T) {
+	t.Setenv("DISCORD_DELETE_STATE_DIR", t.TempDir())
+	m := demoModel()
+	m.screen = scRunning
+	m.runCtx = context.Background()
+	m.phases = []phasePlan{{kind: "messages"}, {kind: "reactions"}}
+	m.phaseIdx = 0
+	m.stats = NewStats(4, 1)
+	m.stats.finished.Store(true)
+	m.stats.completed.Store(true)
+	_, _ = m.Update(tickMsg{})
+	if m.reported {
+		t.Fatal("a completed non-final phase must not finalize the run")
+	}
+	if m.phaseIdx != 1 {
+		t.Fatalf("want phaseIdx 1 after a completed phase, got %d", m.phaseIdx)
+	}
+}
+
+// Execute is refused when the resume log can't be opened: deleting without it
+// would repeat every delete on the next run.
+func TestExecuteGuardRequiresWritableResumeLog(t *testing.T) {
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "blocked")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := demoModel()
+	m.cfg.token = "tok"
+	m.tokenState = tsValid
+	m.progPath = filepath.Join(blocker, "x.deleted.log")
+	if reason := m.executeGuard(); reason == "" {
+		t.Fatal("guard should refuse when the resume log cannot open")
+	}
+	m.progPath = filepath.Join(dir, "x.deleted.log")
+	if reason := m.executeGuard(); reason != "" {
+		t.Fatalf("guard should pass with a writable log path, got %q", reason)
 	}
 }

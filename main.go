@@ -204,6 +204,7 @@ func main() {
 		pkgName: filepath.Base(*pkgPath), owner: owner,
 		progPath: progPath, reactProgPath: reactProgPath,
 		reportOverride: *reportF, stateKey: stateKey,
+		tokenFromStore: loadedFromStore,
 	}
 
 	// The full TUI needs an interactive terminal. Without one (pipe/CI) or with
@@ -327,6 +328,7 @@ type plainRun struct {
 	reactProgPath  string // reaction resume log
 	reportOverride string
 	stateKey       string
+	tokenFromStore bool // cfg.token came from the OS keyring, not a flag or env
 }
 
 // plainPhase is one headless phase's plan: what to delete, the pacing floor, the
@@ -382,6 +384,17 @@ func runPlain(in plainRun) {
 		}
 	}
 
+	// An execute run must be resumable: without a working log every deletion
+	// would be re-attempted by the next run, so refuse rather than run blind.
+	if cfg.execute {
+		for _, p := range phases {
+			if err := probeProgressLog(p.progPath); err != nil {
+				fmt.Fprintf(os.Stderr, "error: cannot open the resume log (%v). Deletions would not be recorded, and the next run would repeat all of them. Point DISCORD_DELETE_STATE_DIR at a writable directory.\n", err)
+				os.Exit(2)
+			}
+		}
+	}
+
 	for _, p := range phases {
 		est := estimate(p.jobs, cfg.workers, p.floor)
 		fmt.Printf("%s: %s %s across %d channel(s), est. runtime ~%s.\n",
@@ -429,7 +442,9 @@ func runPlain(in plainRun) {
 
 	if aborted {
 		fmt.Println("Run was aborted early (see status). Re-run to resume; already-done items are not repeated.")
-		if in.stateKey != "" && hasStoredToken(in.stateKey) {
+		// Forget the stored token only when it was the token in use: a 401 on
+		// a bad --token says nothing about the keyring token.
+		if in.tokenFromStore && in.stateKey != "" && hasStoredToken(in.stateKey) {
 			if err := forgetToken(in.stateKey); err == nil {
 				fmt.Println("The stored token was rejected (401) and has been forgotten.")
 			} else {
@@ -534,7 +549,16 @@ func drivePlainPhase(cfg runConfig, p plainPhase, notify plainNotify) Snapshot {
 	if cfg.execute {
 		if pl, err := openProgressLog(p.progPath); err == nil {
 			onDeleted = pl.record
-			defer pl.close()
+			defer func() {
+				pl.close()
+				if werr := pl.writeErr(); werr != nil {
+					fmt.Fprintf(os.Stderr, "warning: resume log writes failed (%v); deletions after the failure will be re-attempted on the next run.\n", werr)
+				}
+			}()
+		} else {
+			// The preflight probe in runPlain passed, so the state dir broke
+			// mid-run; warn and carry on.
+			fmt.Fprintf(os.Stderr, "warning: resume log unavailable (%v); this phase's deletions will be re-attempted on the next run.\n", err)
 		}
 	}
 	eng := NewEngine(EngineConfig{

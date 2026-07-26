@@ -158,6 +158,7 @@ type appModel struct {
 	prog     progress.Model
 	started  bool
 	rateHist []float64 // recent deletions/sec samples for the sparkline
+	logWarn  string    // resume-log failure notice; "" while the log is healthy
 
 	// ntfy progress + remote control (execute runs with ntfy set)
 	lastNotify time.Time       // when the last progress ntfy went out
@@ -445,18 +446,22 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(m.rateHist) > 120 {
 				m.rateHist = m.rateHist[len(m.rateHist)-120:]
 			}
+			m.noteLogErr()
 			if snap.Finished || snap.Aborted {
 				if m.reported {
 					return m, nil
 				}
 				// Record this phase's result. Then either advance to the next
-				// phase, or (on the last phase, or an abort) finalize once.
+				// phase, or (on the last phase, an abort, or a stop) finalize
+				// once. A stop ends the whole run, not just the phase: the next
+				// phase would start on the already-cancelled context.
 				m.phaseResults = append(m.phaseResults, m.phaseResult(snap))
 				if m.progLog != nil {
 					m.progLog.close()
+					m.noteLogErr()
 					m.progLog = nil
 				}
-				if snap.Aborted || m.phaseIdx >= len(m.phases)-1 {
+				if snap.Aborted || !snap.Completed || m.phaseIdx >= len(m.phases)-1 {
 					m.reported = true
 					return m, m.finalizeRun()
 				}
@@ -643,7 +648,7 @@ func (m *appModel) launchEngine() (tea.Model, tea.Cmd) {
 	m.started = true
 	m.startedAt = time.Now()
 	m.reported = false
-	m.reportPath, m.notifyResult = "", ""
+	m.reportPath, m.notifyResult, m.logWarn = "", "", ""
 	m.screen = scRunning
 
 	// Remote control (pause/resume/stop from the phone) rides the same ntfy
@@ -681,6 +686,10 @@ func (m *appModel) startPhase(i int) tea.Cmd {
 		if pl, err := openProgressLog(p.logPath); err == nil {
 			m.progLog = pl
 			onDeleted = pl.record
+		} else {
+			// executeGuard probed this log before the run, so this only happens
+			// on mid-run breakage; warn and carry on.
+			m.logWarn = "resume log unavailable (" + err.Error() + "): this phase's deletions will be re-attempted on the next run"
 		}
 	}
 	minInterval := time.Duration(float64(time.Second) / clampFloat(m.cfg.maxRPS, 1, 49))
@@ -697,6 +706,18 @@ func (m *appModel) startPhase(i int) tea.Cmd {
 	m.lastNotify = time.Now()
 	go m.eng.Run(m.runCtx, p.jobs)
 	return doTick()
+}
+
+// noteLogErr surfaces the resume log's first write failure on the running
+// screen. bufio's error is sticky: nothing is recorded after it, so those
+// deletions repeat on the next run while this one keeps going.
+func (m *appModel) noteLogErr() {
+	if m.logWarn != "" || m.progLog == nil {
+		return
+	}
+	if err := m.progLog.writeErr(); err != nil {
+		m.logWarn = "resume log write failed (" + err.Error() + "): deletions from that point on will be re-attempted on the next run"
+	}
 }
 
 // phaseResult captures a finished phase's outcome, resolving its channels to
@@ -894,12 +915,18 @@ type notifyDoneMsg struct{ err error }
 func (m *appModel) finishRun() {
 	if m.progLog != nil {
 		m.progLog.close()
+		if err := m.progLog.writeErr(); err != nil && m.perr == "" {
+			m.perr = "Resume log write failed (" + err.Error() + "). Deletions after the failure were not recorded and will be re-attempted on the next run."
+		}
 		m.progLog = nil
 	}
 	// A run only aborts on repeated 401, which means the token has almost
-	// certainly rotated. Drop any stored copy so the next launch re-authenticates
-	// instead of loading a dead token.
-	if m.stats != nil && m.stats.Snapshot().Aborted && m.stateKey != "" && hasStoredToken(m.stateKey) {
+	// certainly rotated. Drop the stored copy, but only when the rejected token
+	// is the stored one (savedToken tracks what the keyring holds): an abort on
+	// a pasted or flag token says nothing about a good token in the store.
+	tok := strings.TrimSpace(m.cfg.token)
+	if m.stats != nil && m.stats.Snapshot().Aborted && m.stateKey != "" &&
+		tok != "" && tok == m.savedToken && hasStoredToken(m.stateKey) {
 		if err := forgetToken(m.stateKey); err == nil {
 			m.savedToken, m.tokenFromStore = "", false
 			m.perr = "The stored token was rejected (401) and has been forgotten. Re-authenticate before the next run."
@@ -1057,6 +1084,10 @@ func (m *appModel) viewRunning() string {
 	if n := len(snap.Workers); snap.ActiveLimit >= 1 && snap.ActiveLimit < n {
 		note := fmt.Sprintf("account-wide rate limit: running %d of %d workers. Old messages detected; Discord rate limits are harsh. Extra workers not needed.", snap.ActiveLimit, n)
 		b.WriteString(wrapText(stYellow.Render(note), m.width, 2) + "\n")
+	}
+
+	if m.logWarn != "" {
+		b.WriteString(wrapText(stYellow.Render("⚠ "+m.logWarn), m.width, 2) + "\n")
 	}
 
 	if len(snap.Errors) > 0 {

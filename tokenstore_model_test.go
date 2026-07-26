@@ -64,3 +64,32 @@ func TestApplyTokenCheckPersistsWhenValid(t *testing.T) {
 		t.Fatal("a validated token should be persisted via applyTokenCheck")
 	}
 }
+
+// A 401 abort forgets the stored token only when the stored token is the one
+// the run was using; a bad token passed over a good stored one must keep it.
+func TestAbortForgetsOnlyTheTokenInUse(t *testing.T) {
+	stubKeyring(t, true)
+	t.Setenv("DISCORD_DELETE_STATE_DIR", t.TempDir())
+	m := demoModel()
+	m.stateKey = "user-55"
+	if _, err := saveToken("user-55", "stored-tok"); err != nil {
+		t.Fatal(err)
+	}
+	m.savedToken = "stored-tok"
+	m.cfg.token = "different-tok"
+	m.stats = NewStats(1, 1)
+	m.stats.aborted.Store(true)
+	m.finishRun()
+	if !hasStoredToken("user-55") {
+		t.Fatal("an abort on a non-stored token must keep the stored one")
+	}
+
+	m.cfg.token = "stored-tok"
+	m.finishRun()
+	if hasStoredToken("user-55") {
+		t.Fatal("an abort on the stored token should forget it")
+	}
+	if m.savedToken != "" || m.tokenFromStore {
+		t.Fatal("forgetting should clear the saved-token bookkeeping")
+	}
+}

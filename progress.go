@@ -76,9 +76,10 @@ func loadProgressSet(path string) map[string]bool {
 // progressLog appends confirmed-gone message IDs, flushing each so a crash can't
 // lose more than the in-flight delete. Safe for concurrent workers.
 type progressLog struct {
-	mu sync.Mutex
-	f  *os.File
-	w  *bufio.Writer
+	mu  sync.Mutex
+	f   *os.File
+	w   *bufio.Writer
+	err error // first failed append; bufio's error is sticky, so the log is dead after
 }
 
 func openProgressLog(path string) (*progressLog, error) {
@@ -97,10 +98,28 @@ func (p *progressLog) record(msgID string) {
 		return
 	}
 	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.err != nil {
+		return
+	}
 	p.w.WriteString(msgID)
 	p.w.WriteByte('\n')
-	p.w.Flush() // reach the OS now, so a process crash keeps this record
-	p.mu.Unlock()
+	// Flush now so a process crash keeps this record. Flush also returns the
+	// writer's sticky error, covering the two unchecked writes above.
+	if err := p.w.Flush(); err != nil {
+		p.err = err
+	}
+}
+
+// writeErr reports the first failed append or flush; every record after it was
+// dropped, so those deletions repeat on the next run.
+func (p *progressLog) writeErr() error {
+	if p == nil {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.err
 }
 
 func (p *progressLog) close() {
@@ -108,9 +127,25 @@ func (p *progressLog) close() {
 		return
 	}
 	p.mu.Lock()
-	p.w.Flush()
-	p.f.Close()
-	p.mu.Unlock()
+	defer p.mu.Unlock()
+	if err := p.w.Flush(); err != nil && p.err == nil {
+		p.err = err
+	}
+	if err := p.f.Close(); err != nil && p.err == nil {
+		p.err = err
+	}
+}
+
+// probeProgressLog checks that the log can be created and opened for append,
+// so an execute run can refuse up front instead of deleting without a resume
+// record.
+func probeProgressLog(path string) error {
+	pl, err := openProgressLog(path)
+	if err != nil {
+		return err
+	}
+	pl.close()
+	return nil
 }
 
 func countInSet(raws []RawChannel, set map[string]bool) int {
