@@ -112,6 +112,18 @@ func TestCheckTokenEmptyIsNone(t *testing.T) {
 	}
 }
 
+// A manually entered token must clear a stale browser sign-in error, or the
+// home screen keeps showing "sign-in failed" over a now-valid token.
+func TestStartTokenCheckClearsBrowserErr(t *testing.T) {
+	m := demoModel()
+	m.browserErr = "browser sign-in cancelled"
+	m.cfg.token = "abc.def.ghi"
+	m.startTokenCheck()
+	if m.browserErr != "" {
+		t.Fatalf("browserErr should clear on a manual token check, got %q", m.browserErr)
+	}
+}
+
 // applyTokenCheck must ignore a stale probe whose token no longer matches the model's current token.
 func TestApplyTokenCheckIgnoresStale(t *testing.T) {
 	m := demoModel()
