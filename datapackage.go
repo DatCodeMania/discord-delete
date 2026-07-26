@@ -278,9 +278,39 @@ type Filter struct {
 type rawChannel struct {
 	ID    string          `json:"id"`
 	Name  string          `json:"name"`
-	Type  int             `json:"type"`
+	Type  channelType     `json:"type"`
 	Guild json.RawMessage `json:"guild"`
 }
+
+// channelType is the channel.json "type". Current exports send a string enum
+// ("GUILD_TEXT", "DM", "PUBLIC_THREAD", …); older ones sent a number. Decoded
+// tolerantly so a type mismatch never drops the channel.
+type channelType string
+
+func (c *channelType) UnmarshalJSON(b []byte) error {
+	var s string
+	if json.Unmarshal(b, &s) == nil {
+		*c = channelType(s)
+		return nil
+	}
+	var n json.Number
+	if json.Unmarshal(b, &n) == nil {
+		*c = channelType(n.String())
+	}
+	return nil
+}
+
+// isDM reports whether the type denotes a direct or group DM (string enum, or
+// the legacy numeric 1/3).
+func (c channelType) isDM() bool {
+	switch c {
+	case "DM", "GROUP_DM", "1", "3":
+		return true
+	}
+	return false
+}
+
+func (c channelType) known() bool { return c != "" }
 
 func (r rawChannel) guildIDName() (string, string) {
 	if len(r.Guild) == 0 || string(r.Guild) == "null" {
@@ -394,7 +424,7 @@ func LoadRawPackage(pkgPath string) ([]RawChannel, error) {
 		return nil, err
 	}
 	defer closer()
-	raws := loadChannelsFS(fsys)
+	raws := loadChannelsFS(fsys, loadPkgIndexes(fsys))
 	if len(raws) == 0 {
 		return nil, fmt.Errorf("no messages/*/messages.json (or .csv) found in %q; is this a Discord data package?", pkgPath)
 	}
@@ -413,10 +443,11 @@ func ReadPackage(pkgPath string) (*LoadedPackage, error) {
 	if err != nil {
 		return nil, err
 	}
+	idx := loadPkgIndexes(fsys)
 	p := &LoadedPackage{
-		Raws:       loadChannelsFS(fsys),
+		Raws:       loadChannelsFS(fsys, idx),
 		Reactions:  reactions,
-		GuildNames: loadGuildNames(fsys),
+		GuildNames: idx.guildNames,
 	}
 	// Owner comes from this same open package, so callers needn't reopen it.
 	p.Owner, _ = readPackageOwner(fsys)
@@ -427,9 +458,80 @@ func ReadPackage(pkgPath string) (*LoadedPackage, error) {
 	return p, nil
 }
 
+// pkgIndexes holds the offline lookups used to attribute a channel to its guild
+// when its channel.json no longer carries the guild. Current exports drop the
+// guild object for servers the user has left, leaving only the Messages index.
+type pkgIndexes struct {
+	guildNames map[string]string // guild id -> name (Servers/index.json)
+	chanLabels map[string]string // channel id -> "name in guild" (Messages/index.json)
+	nameToID   map[string]string // guild name -> id, unambiguous names only
+}
+
+func loadPkgIndexes(fsys fs.FS) pkgIndexes {
+	gn := loadGuildNames(fsys)
+	idx := pkgIndexes{guildNames: gn, chanLabels: loadMessagesIndex(fsys), nameToID: map[string]string{}}
+	seen := map[string]int{}
+	for id, name := range gn {
+		seen[name]++
+		idx.nameToID[name] = id
+	}
+	for name, n := range seen {
+		if n > 1 { // an ambiguous name can't resolve to one id
+			delete(idx.nameToID, name)
+		}
+	}
+	return idx
+}
+
+// loadMessagesIndex parses Messages/index.json (channel id -> a human label like
+// "general in My Server" or "Direct Message with Bob"). Best-effort: absent or
+// unparseable yields an empty map; null labels are skipped.
+func loadMessagesIndex(fsys fs.FS) map[string]string {
+	out := map[string]string{}
+	_ = fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if strings.ToLower(d.Name()) != "index.json" || !strings.HasSuffix(strings.ToLower(path.Dir(p)), "messages") {
+			return nil
+		}
+		if data, e := fs.ReadFile(fsys, p); e == nil {
+			var idx map[string]*string
+			if json.Unmarshal(data, &idx) == nil {
+				for id, label := range idx {
+					if label != nil && *label != "" {
+						out[id] = *label
+					}
+				}
+			}
+		}
+		return nil
+	})
+	return out
+}
+
+// attributeFromLabel pulls a channel name, guild id, and guild name out of a
+// Messages-index label of the form "<channel> in <guild>". Known server names
+// are matched first so a channel name containing " in " doesn't split wrong;
+// otherwise it splits on the last " in ". A left server has no id anywhere in
+// the package, so it gets a synthetic "name:<guild>" key that groups it stably
+// and can't collide with a numeric snowflake. Empty guild name means no match.
+func attributeFromLabel(label string, idx pkgIndexes) (chanName, guildID, guildName string) {
+	for name, id := range idx.nameToID {
+		if strings.HasSuffix(label, " in "+name) {
+			return strings.TrimSuffix(label, " in "+name), id, name
+		}
+	}
+	if i := strings.LastIndex(label, " in "); i >= 0 {
+		gn := label[i+len(" in "):]
+		return label[:i], "name:" + gn, gn
+	}
+	return "", "", ""
+}
+
 // loadChannelsFS walks a package filesystem and parses each channel's messages.
 // Empty result (no messages) is not an error here; callers decide.
-func loadChannelsFS(fsys fs.FS) []RawChannel {
+func loadChannelsFS(fsys fs.FS, idx pkgIndexes) []RawChannel {
 	// Find each channel folder's message file. At most one per folder: if a
 	// folder somehow ships both messages.json and messages.csv, taking both
 	// would queue (and delete) every message twice. Prefer the JSON.
@@ -461,7 +563,7 @@ func loadChannelsFS(fsys fs.FS) []RawChannel {
 
 	var raws []RawChannel
 	for _, mf := range msgFiles {
-		rc, err := parseRawChannel(fsys, mf)
+		rc, err := parseRawChannel(fsys, mf, idx)
 		if err != nil {
 			// One bad channel shouldn't sink the load; note and continue.
 			fmt.Fprintf(os.Stderr, "warn: %s: %v\n", mf, err)
@@ -475,7 +577,7 @@ func loadChannelsFS(fsys fs.FS) []RawChannel {
 	return raws
 }
 
-func parseRawChannel(fsys fs.FS, msgFile string) (*RawChannel, error) {
+func parseRawChannel(fsys fs.FS, msgFile string, idx pkgIndexes) (*RawChannel, error) {
 	dir := path.Dir(msgFile)
 
 	// channel.json is optional; fall back to the folder name for the id.
@@ -491,6 +593,29 @@ func parseRawChannel(fsys fs.FS, msgFile string) (*RawChannel, error) {
 		return nil, fmt.Errorf("could not determine channel id")
 	}
 	guildID, guildName := ch.guildIDName()
+	if guildID != "" && guildName == "" {
+		guildName = idx.guildNames[guildID] // legacy bare-id guild: name from Servers/
+	}
+	name := ch.Name
+
+	// Current exports drop the guild object for channels of servers the user has
+	// left, which would misclassify them as DMs. Recover attribution from the
+	// Messages index so they group and label as servers instead.
+	if guildID == "" && !ch.Type.isDM() {
+		if label := idx.chanLabels[channelID]; label != "" && !strings.HasPrefix(label, "Direct Message with ") {
+			if cn, gid, gn := attributeFromLabel(label, idx); gn != "" {
+				guildID, guildName = gid, gn
+				if name == "" && cn != "" && cn != "Unknown channel" {
+					name = cn
+				}
+			}
+		}
+		// A guild-typed channel we still can't attribute (partial export) groups
+		// under one "Unknown server" bucket rather than falling in with DMs.
+		if guildID == "" && ch.Type.known() {
+			guildID, guildName = "unknown-guild", "Unknown server"
+		}
+	}
 
 	data, err := fs.ReadFile(fsys, msgFile)
 	if err != nil {
@@ -508,8 +633,8 @@ func parseRawChannel(fsys fs.FS, msgFile string) (*RawChannel, error) {
 
 	return &RawChannel{
 		ChannelID: channelID,
-		Label:     channelLabel(ch, guildName, channelID),
-		Name:      ch.Name,
+		Label:     channelLabel(name, guildName, channelID),
+		Name:      name,
 		GuildID:   guildID,
 		GuildName: guildName,
 		IsDM:      guildID == "",
@@ -774,12 +899,12 @@ func newMessageFull(id, content, attachments string) Message {
 	}
 }
 
-func channelLabel(ch rawChannel, guildName, channelID string) string {
+func channelLabel(name, guildName, channelID string) string {
 	switch {
-	case ch.Name != "" && guildName != "":
-		return fmt.Sprintf("#%s (%s)", ch.Name, guildName)
-	case ch.Name != "":
-		return "#" + ch.Name
+	case name != "" && guildName != "":
+		return fmt.Sprintf("#%s (%s)", name, guildName)
+	case name != "":
+		return "#" + name
 	case guildName != "":
 		return guildName + " / " + channelID
 	default:
