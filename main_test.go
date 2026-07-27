@@ -46,3 +46,29 @@ func TestNounFor(t *testing.T) {
 		t.Fatalf("nounFor wrong: %q / %q", nounFor("messages", 1), nounFor("reactions", 2))
 	}
 }
+
+// Commands posted while a headless phase wound down are applied at the boundary
+// instead of being lost, and a stop wins over anything queued behind it.
+func TestDrainControl(t *testing.T) {
+	if stop, paused := drainControl(nil); stop || paused {
+		t.Fatal("control off should change nothing")
+	}
+	ctrl := make(chan controlCmd, 8)
+	if stop, paused := drainControl(ctrl); stop || paused {
+		t.Fatal("an idle boundary should change nothing")
+	}
+	ctrl <- cmdPause
+	if stop, paused := drainControl(ctrl); stop || !paused {
+		t.Fatalf("pause at the boundary: stop=%v paused=%v", stop, paused)
+	}
+	ctrl <- cmdPause
+	ctrl <- cmdResume
+	if stop, paused := drainControl(ctrl); stop || paused {
+		t.Fatalf("resume should cancel a queued pause: stop=%v paused=%v", stop, paused)
+	}
+	ctrl <- cmdPause
+	ctrl <- cmdStop
+	if stop, _ := drainControl(ctrl); !stop {
+		t.Fatal("a queued stop must end the run")
+	}
+}

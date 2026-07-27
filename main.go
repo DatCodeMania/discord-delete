@@ -419,14 +419,32 @@ func runPlain(in plainRun) {
 		execute: cfg.execute,
 	}
 
+	// Remote control subscribes once for the whole run, not per phase: the ntfy
+	// stream only delivers messages posted while it is connected, so a command
+	// sent between phases would land with nobody listening.
+	ctrlCtx, stopCtrl := context.WithCancel(context.Background())
+	defer stopCtrl()
+	var ctrl chan controlCmd
+	if cfg.execute && notify.control != "" {
+		ctrl = make(chan controlCmd, 8)
+		go subscribeControl(ctrlCtx, notify.control, func(c controlCmd) {
+			select {
+			case ctrl <- c:
+			case <-ctrlCtx.Done():
+			}
+		})
+	}
+
 	startedAt := time.Now()
 	var snaps []phaseSnap
 	aborted := false
+	stopped := false
+	startPaused := false
 	for i, p := range phases {
 		if len(phases) > 1 {
 			fmt.Printf("\n--- phase %d/%d: %s ---\n", i+1, len(phases), p.kind)
 		}
-		snap := drivePlainPhase(cfg, p, notify)
+		snap := drivePlainPhase(cfg, p, notify, ctrl, startPaused)
 		snaps = append(snaps, phaseSnap{kind: p.kind, snap: snap, meta: p.meta})
 		printPhaseResult(cfg, p.kind, snap)
 		if snap.Aborted {
@@ -436,6 +454,13 @@ func runPlain(in plainRun) {
 		}
 		if !snap.Completed {
 			// A stop (Ctrl-C/SIGTERM/remote) ends the whole run, not just the phase.
+			break
+		}
+		// Commands that arrived while this phase wound down had no engine to act
+		// on; apply them before the next phase starts.
+		stopped, startPaused = drainControl(ctrl)
+		if stopped {
+			fmt.Println("stopping (remote)...")
 			break
 		}
 	}
@@ -451,7 +476,7 @@ func runPlain(in plainRun) {
 				fmt.Fprintf(os.Stderr, "The stored token was rejected (401) but could not be removed from the keyring: %v\n", err)
 			}
 		}
-	} else if anyStopped(snaps) {
+	} else if stopped || anyStopped(snaps) {
 		fmt.Println("Stopped before finishing. Re-run to resume where you left off.")
 	}
 	if !cfg.execute {
@@ -537,8 +562,9 @@ func plainPhases(in plainRun) []plainPhase {
 }
 
 // drivePlainPhase runs one phase's engine to completion (or interrupt) and
-// returns its final snapshot.
-func drivePlainPhase(cfg runConfig, p plainPhase, notify plainNotify) Snapshot {
+// returns its final snapshot. ctrl carries the run's remote commands; startPaused
+// holds a pause that arrived at the previous phase boundary.
+func drivePlainPhase(cfg runConfig, p plainPhase, notify plainNotify, ctrl <-chan controlCmd, startPaused bool) Snapshot {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	stats := NewStats(p.total, cfg.workers)
@@ -570,9 +596,34 @@ func drivePlainPhase(cfg runConfig, p plainPhase, notify plainNotify) Snapshot {
 		GlobalMinInterval: minInterval,
 		OnDeleted:         onDeleted,
 	}, stats)
+	if startPaused {
+		eng.setPaused(true)
+		fmt.Println("paused (remote)")
+	}
 	go eng.Run(ctx, p.jobs)
-	plainReport(ctx, cancel, stats, eng, notify)
+	plainReport(ctx, cancel, stats, eng, notify, ctrl)
 	return stats.Snapshot()
+}
+
+// drainControl consumes the commands that arrived between phases, where no
+// engine was live to apply them, and reports whether the run was stopped and
+// whether the next phase starts paused.
+func drainControl(ctrl <-chan controlCmd) (stop, paused bool) {
+	for {
+		select {
+		case c := <-ctrl:
+			switch c {
+			case cmdStop:
+				return true, paused
+			case cmdPause:
+				paused = true
+			case cmdResume:
+				paused = false
+			}
+		default:
+			return false, paused
+		}
+	}
 }
 
 // writePlainReport assembles the combined multi-phase report, fetching guild
@@ -693,24 +744,12 @@ type plainNotify struct {
 
 // plainReport prints periodic progress lines until the run ends or is signalled.
 // On a real run with ntfy set it also pushes a progress notification every
-// n.every (each with a pause button) and honors pause/resume/stop commands that
-// arrive on the control topic.
-func plainReport(ctx context.Context, cancel context.CancelFunc, stats *Stats, eng *Engine, n plainNotify) {
+// n.every (each with a pause button) and applies pause/resume/stop commands
+// arriving on ctrl, the run-wide control subscription.
+func plainReport(ctx context.Context, cancel context.CancelFunc, stats *Stats, eng *Engine, n plainNotify, ctrl <-chan controlCmd) {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sig)
-
-	// Remote control mirrors the TUI: subscribe to the control topic and apply
-	// pause/resume/stop here on this goroutine.
-	ctrl := make(chan controlCmd, 8)
-	if n.execute && n.control != "" {
-		go subscribeControl(ctx, n.control, func(c controlCmd) {
-			select {
-			case ctrl <- c:
-			case <-ctx.Done():
-			}
-		})
-	}
 
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()

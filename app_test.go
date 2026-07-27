@@ -366,6 +366,56 @@ func TestCompletedPhaseAdvances(t *testing.T) {
 	}
 }
 
+// A stop that lands after the phase completed, in the gap before the tick that
+// would start the next one, still ends the run.
+func TestBoundaryStopEndsRun(t *testing.T) {
+	t.Setenv("DISCORD_DELETE_STATE_DIR", t.TempDir())
+	m := demoModel()
+	m.screen = scRunning
+	m.runCtx = context.Background()
+	m.phases = []phasePlan{{kind: "messages"}, {kind: "reactions"}}
+	m.stats = NewStats(4, 1)
+	m.eng = NewEngine(EngineConfig{Workers: 1}, m.stats)
+	m.stats.finished.Store(true)
+	m.stats.completed.Store(true)
+	_, _ = m.Update(controlMsg{cmd: cmdStop})
+	_, _ = m.Update(tickMsg{})
+	if !m.reported {
+		t.Fatal("a stop at the phase boundary must finalize the run")
+	}
+	if m.phaseIdx != 0 {
+		t.Fatalf("phaseIdx advanced to %d after a stop at the boundary", m.phaseIdx)
+	}
+}
+
+// A pause tapped at a phase boundary holds until the next phase's engine exists.
+func TestBoundaryPauseCarriesIntoNextPhase(t *testing.T) {
+	t.Setenv("DISCORD_DELETE_STATE_DIR", t.TempDir())
+	m := demoModel()
+	m.cfg.execute = true
+	m.screen = scRunning
+	m.runCtx = context.Background()
+	m.phases = []phasePlan{{kind: "messages"}, {kind: "reactions"}}
+	m.stats = NewStats(4, 1)
+	m.eng = NewEngine(EngineConfig{Workers: 1}, m.stats)
+	m.stats.finished.Store(true)
+	m.stats.completed.Store(true)
+	_, _ = m.Update(controlMsg{cmd: cmdPause})
+	if !m.pausePend {
+		t.Fatal("a pause at the boundary must be held for the next phase")
+	}
+	_, _ = m.Update(tickMsg{})
+	if m.phaseIdx != 1 {
+		t.Fatalf("want phaseIdx 1, got %d", m.phaseIdx)
+	}
+	if !m.paused || !m.eng.isPaused() {
+		t.Fatal("the next phase must start paused")
+	}
+	if m.pausePend {
+		t.Fatal("the held pause should be consumed once applied")
+	}
+}
+
 // Execute is refused when the resume log can't be opened: deleting without it
 // would repeat every delete on the next run.
 func TestExecuteGuardRequiresWritableResumeLog(t *testing.T) {

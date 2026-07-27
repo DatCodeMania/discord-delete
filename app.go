@@ -164,6 +164,8 @@ type appModel struct {
 	lastNotify time.Time       // when the last progress ntfy went out
 	controlCh  chan controlCmd // pause/resume/stop from the phone; nil = control off
 	controlOn  bool
+	stopping   bool // stop taken; finalize instead of advancing to the next phase
+	pausePend  bool // pause taken at a phase boundary; applied to the next phase's engine
 
 	// end-of-run finalization (report file + optional ntfy ping), fired once
 	startedAt      time.Time
@@ -461,7 +463,7 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.noteLogErr()
 					m.progLog = nil
 				}
-				if snap.Aborted || !snap.Completed || m.phaseIdx >= len(m.phases)-1 {
+				if snap.Aborted || !snap.Completed || m.stopping || m.phaseIdx >= len(m.phases)-1 {
 					m.reported = true
 					return m, m.finalizeRun()
 				}
@@ -648,6 +650,7 @@ func (m *appModel) launchEngine() (tea.Model, tea.Cmd) {
 	m.started = true
 	m.startedAt = time.Now()
 	m.reported = false
+	m.stopping, m.pausePend = false, false
 	m.reportPath, m.notifyResult, m.logWarn = "", "", ""
 	m.screen = scRunning
 
@@ -702,9 +705,16 @@ func (m *appModel) startPhase(i int) tea.Cmd {
 		GlobalMinInterval: minInterval,
 		OnDeleted:         onDeleted,
 	}, m.stats)
-	m.paused = false
+	m.paused = m.pausePend && m.cfg.execute
+	m.pausePend = false
+	m.eng.setPaused(m.paused)
 	m.lastNotify = time.Now()
 	go m.eng.Run(m.runCtx, p.jobs)
+	if m.paused {
+		// The pause was taken at the boundary with no engine to hold it; confirm
+		// it to the phone now that one does.
+		return tea.Batch(doTick(), m.progressNotifyCmd(true))
+	}
 	return doTick()
 }
 
@@ -763,24 +773,33 @@ func (m *appModel) rearmControl() tea.Cmd {
 // applyControl handles a remote pause/resume/stop, mirroring the p/stop hotkeys,
 // and re-arms the listener so more commands arrive.
 func (m *appModel) applyControl(c controlCmd) (tea.Model, tea.Cmd) {
-	if m.screen != scRunning || m.eng == nil {
+	if m.screen != scRunning || m.eng == nil || m.reported {
 		return m, m.rearmControl()
 	}
-	snap := m.stats.Snapshot()
-	if snap.Finished || snap.Aborted {
-		return m, m.rearmControl()
-	}
+	// Between a phase finishing and the tick that starts the next one there is
+	// no live engine, so pause and stop are held for the next phase rather than
+	// dropped: the run would otherwise keep deleting past a stop the user
+	// believes took effect.
+	boundary := m.atPhaseBoundary()
 	var out tea.Cmd
 	switch c {
 	case cmdPause:
-		if m.cfg.execute && !m.eng.isPaused() {
+		switch {
+		case !m.cfg.execute:
+		case boundary:
+			m.pausePend = true
+		case !m.eng.isPaused():
 			m.eng.setPaused(true)
 			m.paused = true
 			m.lastNotify = time.Now()
 			out = m.progressNotifyCmd(true)
 		}
 	case cmdResume:
-		if m.cfg.execute && m.eng.isPaused() {
+		switch {
+		case !m.cfg.execute:
+		case boundary:
+			m.pausePend = false
+		case m.eng.isPaused():
 			m.eng.setPaused(false)
 			m.paused = false
 			m.lastNotify = time.Now()
@@ -789,11 +808,22 @@ func (m *appModel) applyControl(c controlCmd) (tea.Model, tea.Cmd) {
 	case cmdStop:
 		// Wind the run down; the finished tick writes the report and fires the
 		// completion ping. The final frame stays until the user leaves.
+		m.stopping = true
 		if m.cancel != nil {
 			m.cancel()
 		}
 	}
 	return m, tea.Batch(out, m.rearmControl())
+}
+
+// atPhaseBoundary reports whether the phase's engine has wound down, leaving no
+// live engine for a control command to act on.
+func (m *appModel) atPhaseBoundary() bool {
+	if m.stats == nil {
+		return true
+	}
+	snap := m.stats.Snapshot()
+	return snap.Finished || snap.Aborted
 }
 
 // maybePeriodicNotify fires a progress ntfy once the interval has elapsed.
