@@ -9,8 +9,10 @@ permissions:
   contents: read
 
 jobs:
-  lint:
-    name: lint
+  # gofmt reads no build tags and has no platform behaviour, so it runs once
+  # rather than once per lint target.
+  format:
+    name: gofmt
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -25,6 +27,24 @@ jobs:
             echo "$out" >&2
             exit 1
           fi
+
+  # Build tags decide which files exist, so a linux-only run never sees
+  # browser_windows.go. Each OS lints natively: cross-linting via GOOS can leave
+  # the analyzers short of type information and report the wrong thing.
+  lint:
+    name: lint (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Disable git autocrlf
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26'
       - name: go vet
         run: go vet ./...
       - name: golangci-lint
