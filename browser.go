@@ -87,19 +87,23 @@ func sandboxKind(path string) string {
 	return ""
 }
 
-func chromeInstallPaths() []string { return chromeInstallPathsFor(runtime.GOOS) }
+func chromeInstallPaths() []string {
+	home, _ := os.UserHomeDir()
+	return chromeInstallPathsFor(runtime.GOOS, home)
+}
 
 // chromeInstallPathsFor lists a platform's default install locations, in
-// preference order. Taking the GOOS as a parameter keeps every platform's list
-// testable from any host.
-func chromeInstallPathsFor(goos string) []string {
+// preference order. The home directory is a parameter rather than a lookup
+// because os.UserHomeDir switches on the host's GOOS, which would make this
+// depend on where it runs as well as on goos.
+func chromeInstallPathsFor(goos, home string) []string {
 	switch goos {
 	case "darwin":
 		var out []string
 		// A drag-install by a user without admin rights lands in ~/Applications,
 		// not /Applications.
 		dirs := []string{"/Applications"}
-		if home, err := os.UserHomeDir(); err == nil {
+		if home != "" {
 			dirs = append(dirs, filepath.Join(home, "Applications"))
 		}
 		for _, base := range dirs {

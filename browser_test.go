@@ -139,7 +139,7 @@ func TestChromeInstallPathsNonEmpty(t *testing.T) {
 }
 
 func TestChromeInstallPathsLinux(t *testing.T) {
-	got := strings.Join(chromeInstallPathsFor("linux"), "\n")
+	got := strings.Join(chromeInstallPathsFor("linux", "/home/me"), "\n")
 	// These are the entries a PATH lookup misses: the real binaries under /opt
 	// when no /usr/bin wrapper is installed, and Arch's brave, which Debian and
 	// Ubuntu instead name brave-browser.
@@ -157,9 +157,8 @@ func TestChromeInstallPathsLinux(t *testing.T) {
 }
 
 func TestChromeInstallPathsDarwinCoversUserApplications(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	paths := chromeInstallPathsFor("darwin")
+	const home = "/Users/me"
+	paths := chromeInstallPathsFor("darwin", home)
 
 	sys := filepath.Join("/Applications", "Google Chrome.app", "Contents", "MacOS", "Google Chrome")
 	user := filepath.Join(home, "Applications", "Brave Browser.app", "Contents", "MacOS", "Brave Browser")
@@ -191,7 +190,7 @@ func TestChromeInstallPathsWindowsUsesEnvBases(t *testing.T) {
 		`BraveSoftware\Brave-Browser\Application\brave.exe`,
 		`Vivaldi\Application\vivaldi.exe`,
 	}
-	paths := chromeInstallPathsFor("windows")
+	paths := chromeInstallPathsFor("windows", `C:\Users\me`)
 	for _, base := range bases {
 		for _, rel := range rels {
 			if want := filepath.Join(base, rel); !slices.Contains(paths, want) {
@@ -208,7 +207,7 @@ func TestChromeInstallPathsWindowsSkipsUnsetBases(t *testing.T) {
 	t.Setenv("ProgramFiles", "")
 	t.Setenv("ProgramFiles(x86)", "")
 	t.Setenv("LocalAppData", "")
-	if paths := chromeInstallPathsFor("windows"); len(paths) != 0 {
+	if paths := chromeInstallPathsFor("windows", `C:\Users\me`); len(paths) != 0 {
 		t.Fatalf("no env bases should yield no candidates, got %v", paths)
 	}
 }
