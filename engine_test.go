@@ -34,12 +34,13 @@ func TestDeleteHappyPathAndRateLimits(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	apiBaseOverride = srv.URL
+
 	stats := NewStats(5, 2)
 	eng := NewEngine(EngineConfig{
 		Workers: 2, DeleteDelay: 5 * time.Millisecond, Jitter: 0,
 		DryRun: false, GlobalMinInterval: time.Millisecond,
 	}, stats)
-	apiBaseOverride = srv.URL
 
 	jobs := []ChannelJob{
 		{ChannelID: "111", Label: "a", MsgIDs: []string{"1", "2", "3"}},

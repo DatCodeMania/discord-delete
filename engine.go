@@ -14,6 +14,8 @@ import (
 	"time"
 )
 
+// apiBaseOverride points the API at a test server. Engines snapshot it when
+// constructed, so a later change never reaches a running engine.
 var apiBaseOverride string
 
 func apiBaseURL() string {
@@ -300,6 +302,10 @@ type Engine struct {
 	rng    *rand.Rand
 	rngMu  sync.Mutex
 
+	// apiBase is resolved once at construction and never written again, so the
+	// workers read an immutable field instead of package state.
+	apiBase string
+
 	// baseDelayMs is the per-channel spacing floor in milliseconds, held as an
 	// atomic so a hotkey can nudge pacing live mid-run.
 	baseDelayMs atomic.Int64
@@ -316,13 +322,14 @@ func NewEngine(cfg EngineConfig, stats *Stats) *Engine {
 		cf = newCFBudget()
 	}
 	e := &Engine{
-		cfg:    cfg,
-		stats:  stats,
-		client: &http.Client{Timeout: 30 * time.Second},
-		lim:    &limiter{minInterval: cfg.GlobalMinInterval},
-		conc:   newConcurrencyController(cfg.Workers, stats),
-		cf:     cf,
-		rng:    rand.New(rand.NewSource(time.Now().UnixNano())),
+		cfg:     cfg,
+		stats:   stats,
+		client:  &http.Client{Timeout: 30 * time.Second},
+		lim:     &limiter{minInterval: cfg.GlobalMinInterval},
+		conc:    newConcurrencyController(cfg.Workers, stats),
+		cf:      cf,
+		rng:     rand.New(rand.NewSource(time.Now().UnixNano())),
+		apiBase: apiBaseURL(),
 	}
 	// Without this an inherited window reads as 0 until this phase records an
 	// invalid response of its own.
@@ -564,9 +571,9 @@ func (e *Engine) deleteOne(ctx context.Context, channelID string, item deleteIte
 
 		var url string
 		if item.Emoji == "" {
-			url = fmt.Sprintf("%s/channels/%s/messages/%s", apiBaseURL(), channelID, item.MessageID)
+			url = fmt.Sprintf("%s/channels/%s/messages/%s", e.apiBase, channelID, item.MessageID)
 		} else {
-			url = fmt.Sprintf("%s/channels/%s/messages/%s/reactions/%s/@me", apiBaseURL(), channelID, item.MessageID, item.Emoji)
+			url = fmt.Sprintf("%s/channels/%s/messages/%s/reactions/%s/@me", e.apiBase, channelID, item.MessageID, item.Emoji)
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
 		if err != nil {

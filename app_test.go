@@ -14,6 +14,16 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// runContext gives a test a run context that is cancelled when the test ends.
+// A phase advanced during the test spawns an engine on it, and an uncancelled
+// one keeps deleting after the test returns.
+func runContext(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	return ctx
+}
+
 func demoModel() *appModel {
 	raws := []RawChannel{
 		{ChannelID: "1", Label: "#general (My Server)", GuildID: "g1", GuildName: "My Server",
@@ -302,6 +312,11 @@ func TestStartRunReactionsOnly(t *testing.T) {
 	}
 	m.cfg.execute = false // dry run starts without the confirm screen
 	_, _ = m.startRun()
+	t.Cleanup(func() {
+		if m.cancel != nil {
+			m.cancel()
+		}
+	})
 	if m.perr != "" {
 		t.Fatalf("reactions-only run should start, got perr %q", m.perr)
 	}
@@ -351,7 +366,7 @@ func TestCompletedPhaseAdvances(t *testing.T) {
 	t.Setenv("DISCORD_DELETE_STATE_DIR", t.TempDir())
 	m := demoModel()
 	m.screen = scRunning
-	m.runCtx = context.Background()
+	m.runCtx = runContext(t)
 	m.phases = []phasePlan{{kind: "messages"}, {kind: "reactions"}}
 	m.phaseIdx = 0
 	m.stats = NewStats(4, 1)
@@ -372,7 +387,7 @@ func TestBoundaryStopEndsRun(t *testing.T) {
 	t.Setenv("DISCORD_DELETE_STATE_DIR", t.TempDir())
 	m := demoModel()
 	m.screen = scRunning
-	m.runCtx = context.Background()
+	m.runCtx = runContext(t)
 	m.phases = []phasePlan{{kind: "messages"}, {kind: "reactions"}}
 	m.stats = NewStats(4, 1)
 	m.eng = NewEngine(EngineConfig{Workers: 1}, m.stats)
@@ -394,7 +409,7 @@ func TestBoundaryPauseCarriesIntoNextPhase(t *testing.T) {
 	m := demoModel()
 	m.cfg.execute = true
 	m.screen = scRunning
-	m.runCtx = context.Background()
+	m.runCtx = runContext(t)
 	m.phases = []phasePlan{{kind: "messages"}, {kind: "reactions"}}
 	m.stats = NewStats(4, 1)
 	m.eng = NewEngine(EngineConfig{Workers: 1}, m.stats)
