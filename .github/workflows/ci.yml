@@ -72,3 +72,17 @@ jobs:
         run: go build ./...
       - name: go test
         run: go test ./...
+
+  # The race detector needs cgo and a C toolchain, so it runs on ubuntu only
+  # rather than in the cross-platform matrix above. The engine's concurrency is
+  # not platform-specific, so one host covers it.
+  race:
+    name: race
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26'
+      - name: go test -race
+        run: go test -race ./...
