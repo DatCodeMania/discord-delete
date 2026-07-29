@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -35,25 +36,70 @@ func parseControlCmd(body string) controlCmd {
 
 // ntfyStreamMsg is the subset of ntfy's JSON stream we read.
 type ntfyStreamMsg struct {
+	ID      string `json:"id"`
+	Time    int64  `json:"time"`
 	Event   string `json:"event"`
 	Message string `json:"message"`
 }
 
+// controlResume marks how far the control topic has been read, so a reconnect
+// asks ntfy for the commands posted during the gap instead of losing them.
+//
+// The marker is a timestamp, never a message id. ntfy resolves an id it no
+// longer has cached to "every cached message", so on a run outliving the
+// server's cache window a reconnect would replay commands from an earlier run.
+// A timestamp only ever reaches forward. Its filter is inclusive, so the
+// boundary second arrives twice; seen keeps each command dispatched once.
+type controlResume struct {
+	from int64           // unix seconds
+	seen map[string]bool // ids already dispatched at t == from
+}
+
+// accept advances the marker and reports whether msg still needs dispatching.
+func (r *controlResume) accept(msg ntfyStreamMsg) bool {
+	// Deliberately no "older than the marker, drop it" rule: ntfy orders a
+	// response by time, so the marker can only outrun messages still to come if
+	// the server's clock trails ours, and dropping a live command over clock skew
+	// is worse than the duplicate it would prevent.
+	if msg.Time > r.from {
+		r.from = msg.Time
+		clear(r.seen)
+	}
+	// An id-less message can't be deduplicated; dispatch it rather than risk
+	// swallowing a stop.
+	if msg.ID == "" {
+		return true
+	}
+	if r.seen[msg.ID] {
+		return false
+	}
+	r.seen[msg.ID] = true
+	return true
+}
+
 // subscribeControl streams commands from the control topic until ctx is done,
 // calling onCmd for each recognized one. It reconnects with backoff so a dropped
-// connection (or an ntfy restart) doesn't silently end remote control.
-// Best-effort: every network error is swallowed. ntfy's default JSON stream
-// sends only messages posted after we connect, so a stale command is never
-// replayed on reconnect.
+// connection (or an ntfy restart) doesn't silently end remote control, resuming
+// where it left off so a command sent during the gap still lands.
+// Best-effort: every network error is swallowed. The first connection asks for
+// nothing older than itself and the marker starts at process start, so a command
+// left in ntfy's cache by an earlier run is never replayed into this one.
 func subscribeControl(ctx context.Context, control string, onCmd func(controlCmd)) {
 	if control == "" {
 		return
 	}
 	streamURL := controlStreamURL(control)
+	resume := &controlResume{from: time.Now().Unix(), seen: map[string]bool{}}
 	backoff := time.Second
+	reconnect := false
 	for ctx.Err() == nil {
+		url := streamURL
+		if reconnect {
+			url = withSince(streamURL, resume.from)
+		}
+		reconnect = true
 		start := time.Now()
-		streamControlOnce(ctx, streamURL, onCmd)
+		streamControlOnce(ctx, url, resume, onCmd)
 		if ctx.Err() != nil {
 			return
 		}
@@ -76,9 +122,23 @@ func controlStreamURL(control string) string {
 	return strings.TrimRight(base, "/") + "/json" + rest
 }
 
+// withSince attaches the resume marker, keeping it inside the query string:
+// after any existing ?auth=..., ahead of any #fragment.
+func withSince(streamURL string, since int64) string {
+	head, frag := streamURL, ""
+	if i := strings.IndexByte(streamURL, '#'); i >= 0 {
+		head, frag = streamURL[:i], streamURL[i:]
+	}
+	sep := "?"
+	if strings.Contains(head, "?") {
+		sep = "&"
+	}
+	return head + sep + "since=" + strconv.FormatInt(since, 10) + frag
+}
+
 // streamControlOnce holds one streaming connection open, dispatching every
 // message-event command until the stream ends or ctx is cancelled.
-func streamControlOnce(ctx context.Context, streamURL string, onCmd func(controlCmd)) {
+func streamControlOnce(ctx context.Context, streamURL string, resume *controlResume, onCmd func(controlCmd)) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, streamURL, nil)
 	if err != nil {
 		return
@@ -104,6 +164,11 @@ func streamControlOnce(ctx context.Context, streamURL string, onCmd func(control
 			continue
 		}
 		if msg.Event != "message" {
+			continue
+		}
+		// Marked read before parsing, so an unrecognized body still advances the
+		// marker and isn't refetched on every reconnect.
+		if !resume.accept(msg) {
 			continue
 		}
 		if c := parseControlCmd(msg.Message); c != "" {
