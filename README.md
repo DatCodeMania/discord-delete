@@ -256,8 +256,10 @@ Every confirmed-gone ID (deleted or already absent) is written to a log as it ha
 
 Deleting needs your user token (a dry run does not). Two ways to provide it:
 
-- Browser sign-in: Opens a Chromium browser (Chrome, Chromium, Edge, or Brave, auto-detected; set `DISCORD_DELETE_CHROME` if yours isn't found) at Discord's login, in a throwaway profile. Log in normally, 2FA included, and the tool lifts the token off the first authenticated request.
+- Browser sign-in: Opens a Chromium browser (Chrome, Edge, Brave, Chromium, Vivaldi, Opera, or Arc on macOS, auto-detected; set `DISCORD_DELETE_CHROME` if yours isn't found) at Discord's login, in a throwaway profile. Log in normally, 2FA included, and the tool lifts the token off the first authenticated request.
 - Manual entry: Type it into the token field, or provide `DISCORD_TOKEN` or `--token`.
+
+On Linux, a snap or Flatpak browser is used only if nothing else is installed. Those builds run with a private `/tmp` and cannot read the throwaway profile, so browser sign-in may fail with them. 
 
 The token is then verified against Discord (`GET /users/@me`), and the tool shows who you are logged in as.
 

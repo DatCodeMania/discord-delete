@@ -15,7 +15,7 @@ import (
 )
 
 // errNoChrome is returned when no Chromium-family browser can be located.
-var errNoChrome = errors.New("no Chrome/Chromium/Edge/Brave found")
+var errNoChrome = errors.New("no Chromium-based browser found")
 
 // browserSigninMsg is delivered to the TUI when the browser sign-in flow ends.
 type browserSigninMsg struct {
@@ -30,32 +30,87 @@ func findChrome() string {
 	if p := strings.TrimSpace(os.Getenv("DISCORD_DELETE_CHROME")); p != "" {
 		return p
 	}
-	// Names commonly on PATH (Linux/BSD, and Homebrew symlinks on macOS).
+	return pickBrowser(chromeCandidates())
+}
+
+// chromeCandidates returns every browser it can find, in preference order.
+func chromeCandidates() []string {
+	var out []string
+	// Names commonly on PATH, which in practice means Linux and BSD: macOS casks
+	// and Windows installers do not add one.
 	for _, n := range []string{
 		"google-chrome", "google-chrome-stable", "chromium", "chromium-browser",
-		"brave-browser", "microsoft-edge", "chrome",
+		"brave-browser", "brave", "microsoft-edge", "microsoft-edge-stable",
+		"vivaldi", "vivaldi-stable", "opera", "chrome",
 	} {
 		if p, err := exec.LookPath(n); err == nil {
-			return p
+			out = append(out, p)
 		}
+	}
+	if p := chromeFromRegistry(); p != "" {
+		out = append(out, p)
 	}
 	for _, p := range chromeInstallPaths() {
 		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// pickBrowser takes the first candidate installed outside a sandbox, falling
+// back to a sandboxed one only when nothing else is present. On Ubuntu the snap
+// Chromium sits on PATH and would otherwise beat a working deb install.
+func pickBrowser(candidates []string) string {
+	var sandboxed string
+	for _, p := range candidates {
+		if sandboxKind(p) == "" {
 			return p
 		}
+		if sandboxed == "" {
+			sandboxed = p
+		}
+	}
+	return sandboxed
+}
+
+// sandboxKind names the packaging of a browser that runs sandboxed, or returns
+// "" for an ordinary install. Snap and Flatpak both give the app a private /tmp,
+// so the sign-in profile this process creates there is invisible to it.
+func sandboxKind(path string) string {
+	switch {
+	case strings.HasPrefix(path, "/snap/"):
+		return "snap"
+	case strings.Contains(path, "/flatpak/exports/bin/"):
+		return "Flatpak"
 	}
 	return ""
 }
 
-func chromeInstallPaths() []string {
-	switch runtime.GOOS {
+func chromeInstallPaths() []string { return chromeInstallPathsFor(runtime.GOOS) }
+
+// chromeInstallPathsFor lists a platform's default install locations, in
+// preference order. Taking the GOOS as a parameter keeps every platform's list
+// testable from any host.
+func chromeInstallPathsFor(goos string) []string {
+	switch goos {
 	case "darwin":
-		return []string{
-			"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-			"/Applications/Chromium.app/Contents/MacOS/Chromium",
-			"/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-			"/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+		var out []string
+		// A drag-install by a user without admin rights lands in ~/Applications,
+		// not /Applications.
+		dirs := []string{"/Applications"}
+		if home, err := os.UserHomeDir(); err == nil {
+			dirs = append(dirs, filepath.Join(home, "Applications"))
 		}
+		for _, base := range dirs {
+			for _, bundle := range []string{
+				"Google Chrome", "Chromium", "Microsoft Edge",
+				"Brave Browser", "Vivaldi", "Arc", "Opera",
+			} {
+				out = append(out, filepath.Join(base, bundle+".app", "Contents", "MacOS", bundle))
+			}
+		}
+		return out
 	case "windows":
 		var out []string
 		for _, env := range []string{"ProgramFiles", "ProgramFiles(x86)", "LocalAppData"} {
@@ -68,14 +123,20 @@ func chromeInstallPaths() []string {
 				filepath.Join(base, `Chromium\Application\chrome.exe`),
 				filepath.Join(base, `Microsoft\Edge\Application\msedge.exe`),
 				filepath.Join(base, `BraveSoftware\Brave-Browser\Application\brave.exe`),
+				filepath.Join(base, `Vivaldi\Application\vivaldi.exe`),
 			)
 		}
 		return out
 	default: // linux, *bsd
 		return []string{
 			"/usr/bin/google-chrome", "/usr/bin/google-chrome-stable",
-			"/usr/bin/chromium", "/usr/bin/chromium-browser",
-			"/snap/bin/chromium", "/usr/bin/brave-browser", "/usr/bin/microsoft-edge",
+			"/opt/google/chrome/chrome",
+			"/usr/bin/chromium", "/usr/bin/chromium-browser", "/snap/bin/chromium",
+			"/usr/bin/brave-browser", "/usr/bin/brave", "/opt/brave.com/brave/brave",
+			"/usr/bin/microsoft-edge", "/usr/bin/microsoft-edge-stable",
+			"/opt/microsoft/msedge/msedge",
+			"/usr/bin/vivaldi", "/usr/bin/vivaldi-stable", "/opt/vivaldi/vivaldi",
+			"/usr/bin/opera", "/usr/local/bin/chrome", "/usr/local/bin/chromium",
 		}
 	}
 }
@@ -98,9 +159,12 @@ func captureTokenFromBrowser(ctx context.Context) (string, error) {
 	defer os.RemoveAll(profile)
 
 	opts := append([]chromedp.ExecAllocatorOption{}, chromedp.DefaultExecAllocatorOptions[:]...)
+	// Keep enable-automation as it blocks password saving.
 	opts = append(opts,
 		chromedp.ExecPath(chromePath),
-		chromedp.Flag("headless", false), // the user needs to see and use the window
+		chromedp.Flag("headless", false),
+		chromedp.Flag("hide-scrollbars", false),
+		chromedp.Flag("mute-audio", false),
 		chromedp.UserDataDir(profile),
 	)
 
@@ -130,7 +194,7 @@ func captureTokenFromBrowser(ctx context.Context) (string, error) {
 		network.Enable(),
 		chromedp.Navigate("https://discord.com/login"),
 	); err != nil {
-		return "", launchError(err)
+		return "", launchError(chromePath, err)
 	}
 
 	select {
@@ -165,12 +229,27 @@ func userAuthHeader(h network.Headers) string {
 	return ""
 }
 
-// launchError maps a browser-launch failure to a friendlier error, collapsing
-// "binary missing" cases to errNoChrome.
-func launchError(err error) error {
-	msg := strings.ToLower(err.Error())
-	if strings.Contains(msg, "executable file not found") || strings.Contains(msg, "no such file") {
-		return errNoChrome
+// launchError reports a failed launch, naming the binary that was tried: a bad
+// DISCORD_DELETE_CHROME and a broken install need different fixes. findChrome
+// has already resolved a path, so "no such file" in the wrapped message is
+// Chrome's stderr about a shared library, not an absent browser.
+func launchError(path string, err error) error {
+	// The hint goes last so browserErrLine's tail-first truncation keeps it.
+	if kind := sandboxKind(path); kind != "" {
+		return fmt.Errorf("browser at %s failed to start: %w; %s builds cannot read the sign-in profile in %s, so point DISCORD_DELETE_CHROME at a browser installed outside a sandbox",
+			path, err, kind, os.TempDir())
 	}
-	return fmt.Errorf("couldn't open a browser window (is a desktop session available?): %w", err)
+	return fmt.Errorf("browser at %s failed to start: %w", path, err)
+}
+
+// browserErrLine condenses err into a single status line. chromedp includes all
+// of Chrome's stderr, which is multi-line and front-loaded with unrelated
+// warnings, so truncation keeps the tail.
+func browserErrLine(err error) string {
+	s := strings.Join(strings.Fields(err.Error()), " ")
+	const max = 200
+	if r := []rune(s); len(r) > max {
+		return "…" + string(r[len(r)-max+1:])
+	}
+	return s
 }

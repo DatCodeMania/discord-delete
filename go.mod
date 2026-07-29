@@ -10,6 +10,7 @@ require (
 	github.com/chromedp/chromedp v0.16.0
 	github.com/mattn/go-isatty v0.0.24
 	github.com/zalando/go-keyring v0.2.8
+	golang.org/x/sys v0.47.0
 )
 
 require (
@@ -38,6 +39,5 @@ require (
 	github.com/muesli/termenv v0.16.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
-	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
 )

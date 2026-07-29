@@ -311,9 +311,9 @@ func (m *appModel) applyBrowserSignin(msg browserSigninMsg) tea.Cmd {
 		case errors.Is(msg.err, context.Canceled):
 			m.browserErr = "browser sign-in cancelled"
 		case errors.Is(msg.err, errNoChrome):
-			m.browserErr = "no Chrome/Chromium/Edge/Brave found; install one, set DISCORD_DELETE_CHROME if installed"
+			m.browserErr = "no Chromium browser found (Chrome, Edge, Brave, Chromium, Vivaldi, Opera). Install one, or point DISCORD_DELETE_CHROME at yours."
 		default:
-			m.browserErr = msg.err.Error()
+			m.browserErr = browserErrLine(msg.err)
 		}
 		return nil
 	}
