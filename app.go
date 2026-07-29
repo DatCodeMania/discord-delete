@@ -159,6 +159,7 @@ type appModel struct {
 	started  bool
 	rateHist []float64 // recent deletions/sec samples for the sparkline
 	logWarn  string    // resume-log failure notice; "" while the log is healthy
+	cfb      *cfBudget // Cloudflare invalid-response window; one per process, not per phase
 
 	// ntfy progress + remote control (execute runs with ntfy set)
 	lastNotify time.Time       // when the last progress ntfy went out
@@ -210,6 +211,7 @@ func newAppModel(raws []RawChannel, cfg runConfig, sel map[string]bool, pkgName 
 		prog:     p,
 		width:    90,
 		height:   30,
+		cfb:      newCFBudget(),
 	}
 	// Messages are known at construction; reactions arrive later via setReactions.
 	m.caps.HasMessages = len(raws) > 0
@@ -704,6 +706,7 @@ func (m *appModel) startPhase(i int) tea.Cmd {
 		DryRun:            !m.cfg.execute,
 		GlobalMinInterval: minInterval,
 		OnDeleted:         onDeleted,
+		CF:                m.cfb,
 	}, m.stats)
 	m.paused = m.pausePend && m.cfg.execute
 	m.pausePend = false

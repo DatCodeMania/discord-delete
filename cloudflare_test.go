@@ -10,14 +10,15 @@ import (
 )
 
 func newTestCF(pauseAt, resumeAt int) *cfBudget {
-	return &cfBudget{stats: NewStats(0, 1), window: time.Minute, pauseAt: pauseAt, resumeAt: resumeAt}
+	return &cfBudget{window: time.Minute, pauseAt: pauseAt, resumeAt: resumeAt}
 }
 
 func TestCFBudgetUnderThreshold(t *testing.T) {
 	b := newTestCF(5, 3)
+	st := NewStats(0, 1)
 	now := time.Unix(1_000_000, 0)
 	for i := 0; i < 4; i++ {
-		b.record(now)
+		b.record(now, st)
 	}
 	if paused, _ := b.decide(now); paused {
 		t.Fatal("4 invalids under a threshold of 5 must not pause")
@@ -26,9 +27,10 @@ func TestCFBudgetUnderThreshold(t *testing.T) {
 
 func TestCFBudgetPausesAndComputesWake(t *testing.T) {
 	b := newTestCF(5, 3)
+	st := NewStats(0, 1)
 	now := time.Unix(1_000_000, 0)
 	for i := 0; i < 5; i++ {
-		b.record(now)
+		b.record(now, st)
 	}
 	paused, wake := b.decide(now)
 	if !paused {
@@ -43,9 +45,10 @@ func TestCFBudgetPausesAndComputesWake(t *testing.T) {
 
 func TestCFBudgetPrunesOldEntries(t *testing.T) {
 	b := newTestCF(5, 3)
+	st := NewStats(0, 1)
 	old := time.Unix(1_000_000, 0)
 	for i := 0; i < 5; i++ {
-		b.record(old)
+		b.record(old, st)
 	}
 	later := old.Add(b.window + time.Second)
 	if paused, _ := b.decide(later); paused {
@@ -78,6 +81,51 @@ func TestEngineRecordsInvalidBudget(t *testing.T) {
 
 	if got := stats.Snapshot().InvalidWindow; got != total {
 		t.Fatalf("expected %d invalid responses counted, got %d", total, got)
+	}
+}
+
+// The window is per IP, so the next phase continues the count instead of
+// starting from zero and doubling what the guard lets through.
+func TestCFBudgetCarriesAcrossPhases(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(403)
+	}))
+	defer srv.Close()
+	apiBaseOverride = srv.URL
+	t.Cleanup(func() { apiBaseOverride = "" })
+
+	cf := newCFBudget()
+	phase := func(ids []string) *Stats {
+		stats := NewStats(len(ids), 1)
+		eng := NewEngine(EngineConfig{Workers: 1, DryRun: false, GlobalMinInterval: time.Millisecond, CF: cf}, stats)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		eng.Run(ctx, []ChannelJob{{ChannelID: "1", Label: "x", MsgIDs: ids}})
+		return stats
+	}
+	phase([]string{"1", "2", "3"})
+	second := phase([]string{"4", "5"})
+	if got := second.Snapshot().InvalidWindow; got != 5 {
+		t.Fatalf("second phase should continue the window: got %d, want 5", got)
+	}
+	if got := cf.count(); got != 5 {
+		t.Fatalf("shared budget = %d, want 5", got)
+	}
+
+	// The inherited count shows before the new phase spends anything.
+	fresh := NewStats(0, 1)
+	NewEngine(EngineConfig{Workers: 1, CF: cf}, fresh)
+	if got := fresh.Snapshot().InvalidWindow; got != 5 {
+		t.Fatalf("a new phase should start showing %d invalids, got %d", 5, got)
+	}
+}
+
+// A nil CF keeps each engine's window to itself.
+func TestCFBudgetPrivateByDefault(t *testing.T) {
+	a := NewEngine(EngineConfig{Workers: 1}, NewStats(0, 1))
+	b := NewEngine(EngineConfig{Workers: 1}, NewStats(0, 1))
+	if a.cf == b.cf {
+		t.Fatal("engines without a CF must not share one budget")
 	}
 }
 

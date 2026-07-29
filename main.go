@@ -435,6 +435,9 @@ func runPlain(in plainRun) {
 		})
 	}
 
+	// The invalid-response window is per IP, so both phases share one budget.
+	cfb := newCFBudget()
+
 	startedAt := time.Now()
 	var snaps []phaseSnap
 	aborted := false
@@ -444,7 +447,7 @@ func runPlain(in plainRun) {
 		if len(phases) > 1 {
 			fmt.Printf("\n--- phase %d/%d: %s ---\n", i+1, len(phases), p.kind)
 		}
-		snap := drivePlainPhase(cfg, p, notify, ctrl, startPaused)
+		snap := drivePlainPhase(cfg, p, notify, ctrl, startPaused, cfb)
 		snaps = append(snaps, phaseSnap{kind: p.kind, snap: snap, meta: p.meta})
 		printPhaseResult(cfg, p.kind, snap)
 		if snap.Aborted {
@@ -563,8 +566,9 @@ func plainPhases(in plainRun) []plainPhase {
 
 // drivePlainPhase runs one phase's engine to completion (or interrupt) and
 // returns its final snapshot. ctrl carries the run's remote commands; startPaused
-// holds a pause that arrived at the previous phase boundary.
-func drivePlainPhase(cfg runConfig, p plainPhase, notify plainNotify, ctrl <-chan controlCmd, startPaused bool) Snapshot {
+// holds a pause that arrived at the previous phase boundary; cfb is the run's
+// shared Cloudflare invalid-response window.
+func drivePlainPhase(cfg runConfig, p plainPhase, notify plainNotify, ctrl <-chan controlCmd, startPaused bool, cfb *cfBudget) Snapshot {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	stats := NewStats(p.total, cfg.workers)
@@ -595,6 +599,7 @@ func drivePlainPhase(cfg runConfig, p plainPhase, notify plainNotify, ctrl <-cha
 		DryRun:            !cfg.execute,
 		GlobalMinInterval: minInterval,
 		OnDeleted:         onDeleted,
+		CF:                cfb,
 	}, stats)
 	if startPaused {
 		eng.setPaused(true)

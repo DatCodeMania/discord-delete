@@ -47,6 +47,11 @@ type EngineConfig struct {
 	// (system-message 403). The key is persisted to the resume log and skipped
 	// on a later run. Not called for a retryable 403 (lost access), or skip/fail.
 	OnDeleted func(key string)
+
+	// CF, if set, is the caller's Cloudflare invalid-response budget. Discord
+	// counts those responses per IP over a rolling 10 minutes, so every phase
+	// and run in the process shares one. A nil CF gets a private budget.
+	CF *cfBudget
 }
 
 // WorkerStatus is a snapshot of one worker for the TUI.
@@ -306,15 +311,22 @@ type Engine struct {
 }
 
 func NewEngine(cfg EngineConfig, stats *Stats) *Engine {
+	cf := cfg.CF
+	if cf == nil {
+		cf = newCFBudget()
+	}
 	e := &Engine{
 		cfg:    cfg,
 		stats:  stats,
 		client: &http.Client{Timeout: 30 * time.Second},
 		lim:    &limiter{minInterval: cfg.GlobalMinInterval},
 		conc:   newConcurrencyController(cfg.Workers, stats),
-		cf:     newCFBudget(stats),
+		cf:     cf,
 		rng:    rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
+	// Without this an inherited window reads as 0 until this phase records an
+	// invalid response of its own.
+	stats.setInvalidWindow(cf.count())
 	e.baseDelayMs.Store(cfg.DeleteDelay.Milliseconds())
 	return e
 }
@@ -543,7 +555,7 @@ func (e *Engine) deleteOne(ctx context.Context, channelID string, item deleteIte
 			return
 		}
 		// Hold if we're near Discord's Cloudflare invalid-response cap.
-		if !e.cf.waitIfExhausted(ctx) {
+		if !e.cf.waitIfExhausted(ctx, e.stats) {
 			return
 		}
 		if !e.lim.gate(ctx) {
@@ -595,7 +607,7 @@ func (e *Engine) deleteOne(ctx context.Context, channelID string, item deleteIte
 		// Discord's docs, so only 401/403 and non-shared 429s count.
 		if sc := resp.StatusCode; sc == 401 || sc == 403 ||
 			(sc == 429 && resp.Header.Get("X-RateLimit-Scope") != "shared") {
-			e.cf.record(time.Now())
+			e.cf.record(time.Now(), e.stats)
 		}
 
 		switch {

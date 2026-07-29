@@ -22,10 +22,12 @@ const (
 )
 
 // cfBudget is a rolling-window counter of invalid responses with a hard pause.
+// The window belongs to the IP, not to an engine, so one budget covers every
+// phase and run in the process. Stats last only a phase, so the caller passes
+// them in per call.
 type cfBudget struct {
 	mu    sync.Mutex
 	times []int64 // unix-milli of invalid responses, ascending
-	stats *Stats
 
 	// tunable so tests can use small windows/thresholds
 	window   time.Duration
@@ -33,18 +35,18 @@ type cfBudget struct {
 	resumeAt int
 }
 
-func newCFBudget(stats *Stats) *cfBudget {
-	return &cfBudget{stats: stats, window: cfWindow, pauseAt: cfPauseAt, resumeAt: cfResumeAt}
+func newCFBudget() *cfBudget {
+	return &cfBudget{window: cfWindow, pauseAt: cfPauseAt, resumeAt: cfResumeAt}
 }
 
 // record notes one invalid (401/403/429) response.
-func (b *cfBudget) record(now time.Time) {
+func (b *cfBudget) record(now time.Time, stats *Stats) {
 	b.mu.Lock()
 	b.times = append(b.times, now.UnixMilli())
 	b.prune(now)
 	n := len(b.times)
 	b.mu.Unlock()
-	b.stats.setInvalidWindow(n)
+	stats.setInvalidWindow(n)
 }
 
 // prune drops entries older than the window. Caller holds the lock.
@@ -79,15 +81,17 @@ func (b *cfBudget) decide(now time.Time) (paused bool, wake time.Time) {
 	return true, time.UnixMilli(b.times[drop-1]).Add(b.window)
 }
 
+// count reports the invalid responses still inside the window.
 func (b *cfBudget) count() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.prune(time.Now())
 	return len(b.times)
 }
 
 // waitIfExhausted blocks all callers while the invalid-response budget is spent,
 // releasing once the window has drained enough. Returns false if ctx is done.
-func (b *cfBudget) waitIfExhausted(ctx context.Context) bool {
+func (b *cfBudget) waitIfExhausted(ctx context.Context, stats *Stats) bool {
 	for {
 		paused, wake := b.decide(time.Now())
 		if !paused {
@@ -97,7 +101,7 @@ func (b *cfBudget) waitIfExhausted(ctx context.Context) bool {
 		if d < time.Second {
 			d = time.Second
 		}
-		b.stats.setStatus(fmt.Sprintf("Cloudflare safety: %d invalid responses in 10 min; holding just under the ~%d cap for %s",
+		stats.setStatus(fmt.Sprintf("Cloudflare safety: %d invalid responses in 10 min; holding just under the ~%d cap for %s",
 			b.count(), cfHardLimit, d.Round(time.Second)))
 		if !sleepCtx(ctx, d) {
 			return false
