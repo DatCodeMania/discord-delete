@@ -76,6 +76,8 @@ Obtain your data package: in Discord, go to Settings > Data & Privacy > Request 
 
 By default every run is a dry run: it previews what would be deleted and changes nothing. Add `--execute` (or confirm in the TUI) for a proper run.
 
+To try discord-delete without a package/token, download `demo/demo-package.zip` in this repo, which contains fake data.
+
 Then point discord-delete at your package:
 
 - **TUI**
