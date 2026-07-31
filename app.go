@@ -174,6 +174,8 @@ type appModel struct {
 	reportPath     string // where the run report was written ("" = not yet / failed)
 	reportOverride string // --report path; "" = default alongside the resume log
 	notifyResult   string // short outcome of the ntfy ping, shown on the final frame
+	reportHit      hitBox // where the final frame's open button sits, for click handling
+	openErr        string // last failure from opening the report
 
 	width, height int
 	quitting      bool
@@ -654,6 +656,7 @@ func (m *appModel) launchEngine() (tea.Model, tea.Cmd) {
 	m.reported = false
 	m.stopping, m.pausePend = false, false
 	m.reportPath, m.notifyResult, m.logWarn = "", "", ""
+	m.reportHit, m.openErr = hitBox{}, ""
 	m.screen = scRunning
 
 	// Remote control (pause/resume/stop from the phone) rides the same ntfy
@@ -896,12 +899,34 @@ func (m *appModel) finalizeRun() tea.Cmd {
 		Results:   m.phaseResults,
 		Resumed:   m.resumed,
 	}
+	cmds := []tea.Cmd{notifyCmd(resolveNtfyURL(m.cfg.ntfy), r)}
 	if path := r.destPath(m.reportOverride, m.reportProgPath()); path != "" {
 		if err := writeRunReport(path, r); err == nil {
 			m.reportPath = path
+			// Only now: during the run the terminal keeps the mouse, so
+			// selecting text works as usual.
+			cmds = append(cmds, tea.EnableMouseCellMotion)
 		}
 	}
-	return notifyCmd(resolveNtfyURL(m.cfg.ntfy), r)
+	return tea.Batch(cmds...)
+}
+
+// clickReport answers a plain click on the final frame's button, which the OSC 8
+// link cannot: terminals reserve that for ctrl/cmd+click.
+func (m *appModel) clickReport(msg tea.MouseMsg) {
+	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
+		return
+	}
+	if m.reportPath != "" && m.reportHit.contains(msg.X, msg.Y) {
+		m.openReport()
+	}
+}
+
+func (m *appModel) openReport() {
+	m.openErr = ""
+	if err := openFile(m.reportPath); err != nil {
+		m.openErr = "could not open " + m.reportPath + ": " + err.Error()
+	}
 }
 
 // reportProgPath is the resume log the report path is derived from: the message
@@ -1028,6 +1053,10 @@ func (m *appModel) viewConfirm() string {
 // --- running ---------------------------------------------------------------
 
 func (m *appModel) updateRunning(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if mouse, ok := msg.(tea.MouseMsg); ok {
+		m.clickReport(mouse)
+		return m, nil
+	}
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return m, nil
@@ -1055,7 +1084,13 @@ func (m *appModel) updateRunning(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.finishRun()
 			m.recompute()
 			m.screen = scHome
-			return m, nil
+			// Hand the mouse back: nothing off this screen is clickable.
+			m.reportHit, m.openErr = hitBox{}, ""
+			return m, tea.DisableMouse
+		}
+	case "o":
+		if m.reportPath != "" { // only set once the run has finalized
+			m.openReport()
 		}
 	case "p", " ":
 		// Pause / resume (no-op once the run is done or in dry run). A manual
@@ -1140,7 +1175,15 @@ func (m *appModel) viewRunning() string {
 			b.WriteString(wrapText(stYellow.Render(fmt.Sprintf("⤼ %s message(s) can't be deleted (system messages or servers/DMs you've left). Post-run report has more details.", commafy(n))), m.width, 2) + "\n")
 		}
 		if m.reportPath != "" {
-			b.WriteString(wrapText(stDim.Render("report: "+m.reportPath), m.width, 2) + "\n")
+			// Wrapped first, linked after: the escapes stay out of the wrap.
+			b.WriteString(linkPath(m.reportPath,
+				wrapText(stDim.Render("report: "+m.reportPath), m.width, 2)) + "\n")
+			line, hit := reportButton(m.reportPath, strings.Count(b.String(), "\n"))
+			m.reportHit = hit
+			b.WriteString(line + "\n")
+			if m.openErr != "" {
+				b.WriteString(wrapText(stYellow.Render("⚠ "+m.openErr), m.width, 2) + "\n")
+			}
 		}
 		if m.notifyResult != "" {
 			b.WriteString(wrapText(stDim.Render(m.notifyResult), m.width, 2) + "\n")
@@ -1152,7 +1195,11 @@ func (m *appModel) viewRunning() string {
 		case !snap.Completed:
 			done = stYellow.Render("stopped")
 		}
-		b.WriteString(wrapText(done+stDim.Render("  ·  ")+
+		keys := ""
+		if m.reportPath != "" {
+			keys = stKeyHelp.Render("o") + stDim.Render(" open report  ")
+		}
+		b.WriteString(wrapText(done+stDim.Render("  ·  ")+keys+
 			stKeyHelp.Render("b")+stDim.Render(" home  ")+stKeyHelp.Render("q")+stDim.Render(" quit"), m.width, 2) + "\n")
 	} else {
 		if m.paused {
@@ -1172,7 +1219,14 @@ func (m *appModel) viewRunning() string {
 		}
 		b.WriteString(wrapText(stKeyHelp.Render(help), m.width, 2) + "\n")
 	}
-	return b.String()
+
+	out := b.String()
+	// Bubble Tea paints only the last m.height lines, so the button moves up with
+	// whatever scrolled off the top.
+	if lines := strings.Count(out, "\n") + 1; m.height > 0 && lines > m.height {
+		m.reportHit.y -= lines - m.height
+	}
+	return out
 }
 
 // engBaseDelay is the current live pacing floor (0 if the engine isn't running).

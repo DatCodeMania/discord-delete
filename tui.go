@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -11,6 +13,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-isatty"
 )
 
 func demoMode() bool { return os.Getenv("DEV_DISCORD_DELETE_DEMO") != "" }
@@ -79,6 +82,59 @@ func wrapText(s string, width, indent int) string {
 		lines[i] = pad + lines[i]
 	}
 	return strings.Join(lines, "\n")
+}
+
+// osc8 wraps text in an OSC 8 hyperlink: clickable where the terminal supports
+// it, and invisible everywhere else.
+func osc8(target, text string) string {
+	return "\x1b]8;;" + target + "\x1b\\" + text + "\x1b]8;;\x1b\\"
+}
+
+// fileURL is the file:// form of path. Drive letters need the extra leading
+// slash, and a UNC path's server is the URL's host rather than part of its path.
+func fileURL(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	p := filepath.ToSlash(abs)
+	if rest, ok := strings.CutPrefix(p, "//"); ok {
+		host, tail, _ := strings.Cut(rest, "/")
+		return (&url.URL{Scheme: "file", Host: host, Path: "/" + tail}).String()
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return (&url.URL{Scheme: "file", Path: p}).String()
+}
+
+// linkPath makes already-rendered text open path when clicked.
+func linkPath(path, text string) string { return osc8(fileURL(path), text) }
+
+// plainPathLink is linkPath for --no-tui runs, minus the escapes when stdout is
+// piped somewhere that would only have to strip them.
+func plainPathLink(path string) string {
+	if !isatty.IsTerminal(os.Stdout.Fd()) {
+		return path
+	}
+	return linkPath(path, path)
+}
+
+// hitBox is a clickable region of the frame: row, inclusive column span, 0-based.
+type hitBox struct{ y, x0, x1 int }
+
+func (h hitBox) contains(x, y int) bool { return y == h.y && x >= h.x0 && x <= h.x1 }
+
+const (
+	btnOpenReport = "↗ open report"
+	btnIndent     = 2
+)
+
+// reportButton renders the end-of-run button on row y and the cells it covers.
+// The OSC 8 link is the fallback: terminals only follow it on ctrl/cmd+click.
+func reportButton(path string, y int) (string, hitBox) {
+	line := strings.Repeat(" ", btnIndent) + linkPath(path, stKeyHelp.Render(btnOpenReport))
+	return line, hitBox{y: y, x0: btnIndent, x1: btnIndent + lipgloss.Width(btnOpenReport) - 1}
 }
 
 // twoColMin is the terminal width below which side-by-side panels stack.
