@@ -1,0 +1,29 @@
+name: Feature request
+description: Suggest a feature or a change in an existing feature
+labels: [enhancement]
+body:
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I checked the [README](https://github.com/DatCodeMania/discord-delete#readme)
+          required: true
+        - label: I searched open and closed issues
+          required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Your proposal
+    validations:
+      required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Which mode does this apply to?
+      options:
+        - TUI
+        - Headless (--no-tui)
+        - Both

@@ -1,0 +1,128 @@
+name: Bug report
+description: Something behaves differently than documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > [!CAUTION]
+        > **Never post your token or attach your data package.** Censor tokens, channel names, and server names out of anything you paste or screenshot.
+
+        One issue per problem.
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I checked the [README](https://github.com/DatCodeMania/discord-delete#readme)
+          required: true
+        - label: I searched open and closed issues
+          required: true
+        - label: I am on the most recent release
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`discord-delete --version`"
+      placeholder: discord-delete 1.0.5
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - macOS
+        - Windows
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: Install method
+      options:
+        - AUR
+        - Homebrew
+        - Scoop
+        - Binary releases
+        - go install
+        - Built from source
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: signin
+    attributes:
+      label: Sign-in method
+      options:
+        - Pasted the token into the TUI
+        - Browser sign-in
+        - --token or DISCORD_TOKEN
+        - Already stored in the OS keyring
+        - Did not sign in
+    validations:
+      required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where it happened
+      options:
+        - TUI
+        - Headless (--no-tui)
+        - Both
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened, and what did you expect instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Exact error or output
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Command you ran
+      placeholder: discord-delete --package package.zip --reactions --no-tui
+      render: shell
+
+  - type: dropdown
+    id: package-request
+    attributes:
+      label: Data enabled in your package request
+      options:
+        - Messages and Activity
+        - Messages only
+        - Activity only
+        - Not sure
+
+  - type: input
+    id: terminal
+    attributes:
+      label: Terminal
+      description: For display or input problems.
+      placeholder: Windows Terminal, or kitty
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Ask a question
+    url: https://github.com/DatCodeMania/discord-delete/discussions
+    about: Usage questions and general discussion.
+  - name: Report a security vulnerability
+    url: https://github.com/DatCodeMania/discord-delete/security/advisories/new
+    about: Opens a private advisory thread instead of a public issue.
