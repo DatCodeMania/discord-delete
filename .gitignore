@@ -1,4 +1,5 @@
 /discord-delete
+/discord-delete.exe
 /dist/
 *.token
 .env
