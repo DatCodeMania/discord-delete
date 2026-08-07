@@ -11,6 +11,6 @@
 ## Checklist
 
 - [ ] `gofmt -l .`, `go vet ./...`, and `go test ./...` pass locally
-- [ ] New `.go` files come with a matching `_test.go`, and fixed bugs come with a regression test
+- [ ] New `.go` files come with test coverage, and fixed bugs come with a regression test
 - [ ] No editor config, build output, or data packages in the diff
 - [ ] No new dependency that needs CGO

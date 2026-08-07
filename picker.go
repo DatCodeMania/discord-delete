@@ -113,7 +113,7 @@ func (m *pickerModel) View() string {
 
 func pickerWelcomeBody() string {
 	return strings.Join([]string{
-		stValue.Render("This tool bulk-deletes your Discord messages."),
+		stValue.Render("This tool bulk-deletes your Discord messages and reactions."),
 		stDim.Render("Deletion runs off the data package. It holds every message and ID, so no requests are burned searching Discord."),
 		"",
 		stFrost.Render("Don't have the package yet? Request it from Discord:"),

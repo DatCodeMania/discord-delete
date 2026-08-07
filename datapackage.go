@@ -457,8 +457,8 @@ func ReadPackage(pkgPath string) (*LoadedPackage, error) {
 }
 
 // pkgIndexes holds the offline lookups used to attribute a channel to its guild
-// when its channel.json no longer carries the guild. Current exports drop the
-// guild object for servers the user has left, leaving only the Messages index.
+// when its channel.json omits it. Exports drop the guild object for servers the
+// user has left, leaving only the Messages index.
 type pkgIndexes struct {
 	guildNames map[string]string // guild id -> name (Servers/index.json)
 	chanLabels map[string]string // channel id -> "name in guild" (Messages/index.json)

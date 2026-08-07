@@ -944,7 +944,7 @@ func clampFloat(v, lo, hi float64) float64 {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `discord-delete: bulk-delete Discord messages from a data package.
+	fmt.Fprint(os.Stderr, `discord-delete: bulk-delete your Discord messages and reactions from your data package.
 
 USAGE:
   discord-delete [--package PATH] [flags]
