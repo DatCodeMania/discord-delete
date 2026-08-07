@@ -21,7 +21,7 @@ discord-delete reads the exact channel and message IDs from your data package so
 
 ## Install
 
-- **AUR** (Arch Linux)
+- **AUR** (Arch)
 
   Any AUR helper for `discord-delete-bin`:
 
