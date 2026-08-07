@@ -72,7 +72,7 @@ nfpms:
     bindir: /usr/bin
     mtime: "{{ .CommitDate }}"
     contents:
-      # Debian policy fixes this path and filename
+      # Debian policy fixes this path and filename.
       - src: LICENSE
         dst: /usr/share/doc/discord-delete/copyright
         file_info:
@@ -85,7 +85,7 @@ nfpms:
           mtime: "{{ .CommitDate }}"
     deb:
       lintian_overrides:
-        # CGO is off, so every build trips this
+        # CGO is off, so every build trips this.
         - statically-linked-binary
 
 checksum:
