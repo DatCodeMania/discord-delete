@@ -29,6 +29,20 @@ discord-delete reads the exact channel and message IDs from your data package so
   paru -S discord-delete-bin   # or: yay -S discord-delete-bin
   ```
 
+- **apt** (Debian, Ubuntu, Mint)
+
+  ```sh
+  wget https://github.com/DatCodeMania/discord-delete/releases/latest/download/discord-delete_linux_amd64.deb && sudo apt install ./discord-delete_linux_amd64.deb && rm discord-delete_linux_amd64.deb
+  ```
+
+- **dnf** (Fedora, RHEL, Rocky, Alma)
+
+  ```sh
+  sudo dnf install https://github.com/DatCodeMania/discord-delete/releases/latest/download/discord-delete_linux_amd64.rpm
+  ```
+
+  Swap `amd64` for `arm64` on ARM. Alpine `.apk` in [releases](https://github.com/DatCodeMania/discord-delete/releases).
+
 - **Homebrew** (macOS)
 
   ```sh

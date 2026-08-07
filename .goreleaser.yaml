@@ -56,6 +56,38 @@ archives:
       - src: launchers/windows.bat
         strip_parent: true
 
+# Attached to the GitHub Release; there is no apt or dnf repo behind them.
+nfpms:
+  - ids: [linux]
+    formats: [deb, rpm, apk]
+    # Version-free so /releases/latest/download/ resolves. The README install
+    # commands hardcode these names, so changing the template breaks them.
+    file_name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    vendor: DatCodeMania
+    homepage: "https://github.com/DatCodeMania/discord-delete"
+    description: "Bulk-delete your Discord messages and reactions from your data package"
+    maintainer: "DatCodeMania <aur@codemania.dev>"
+    license: MIT
+    section: utils
+    bindir: /usr/bin
+    mtime: "{{ .CommitDate }}"
+    contents:
+      # Debian policy fixes this path and filename
+      - src: LICENSE
+        dst: /usr/share/doc/discord-delete/copyright
+        file_info:
+          mode: 0644
+          mtime: "{{ .CommitDate }}"
+      - src: README.md
+        dst: /usr/share/doc/discord-delete/README.md
+        file_info:
+          mode: 0644
+          mtime: "{{ .CommitDate }}"
+    deb:
+      lintian_overrides:
+        # CGO is off, so every build trips this
+        - statically-linked-binary
+
 checksum:
   name_template: checksums.txt
 
