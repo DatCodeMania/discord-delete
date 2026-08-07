@@ -665,7 +665,7 @@ func writePlainReport(in plainRun, cfg runConfig, startedAt time.Time, snaps []p
 	}
 	if path := r.destPath(in.reportOverride, in.progPath); path != "" {
 		if err := writeRunReport(path, r); err == nil {
-			fmt.Printf("Report written to %s\n", path)
+			fmt.Printf("Report written to %s\n", plainPathLink(path))
 		}
 	}
 	if target := resolveNtfyURL(cfg.ntfy); target != "" {

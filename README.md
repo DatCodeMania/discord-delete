@@ -214,6 +214,8 @@ Reports land in your OS cache directory, timestamped, next to the resume log:
 
 Use `--report PATH` to write it somewhere specific, or `DISCORD_DELETE_STATE_DIR` to move the whole directory.
 
+When a run completes, that path is printed with a button. Click it or press `o` to open the report. The path is also directly ctrl-clickable (cmd on macOS) in some terminals which support OSC 8 hyperlinks.
+
 That directory also holds the resume log, `<key>.deleted.log`, one confirmed-gone ID per line. It is keyed by account and therefore works across packages. Delete the log to start over from scratch.
 
 The TUI also saves its settings to `<key>.config.json` in that directory, so the next run for that account starts where you left off. The token is not saved here. Any explicit flag overrides a saved value, and headless runs ignore the file.
