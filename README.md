@@ -16,6 +16,9 @@ Bulk-delete your Discord messages and reactions, driven by your GDPR data packag
 
 discord-delete reads the exact channel and message IDs from your data package so it only sends DELETEs. The search API is never touched, and nothing breaks on a UI change. It removes messages and reactions, headless or through an interactive terminal UI (TUI).
 
+> [!TIP]
+> Try discord-delete using a [demo package](https://github.com/DatCodeMania/discord-delete/raw/main/demo/demo-package.zip). It's fake data so no token/account is needed and nothing is deleted.
+
 > [!WARNING]
 > Automating a user account is against Discord's Terms of Service and can get it banned. While this tool cooperates with Discord's rate limits, that doesn't fully protect against a ban.
 
@@ -89,8 +92,6 @@ The binaries are not code-signed. On macOS, a manually downloaded binary may be 
 Obtain your data package: in Discord, go to Settings > Data & Privacy > Request Data and enable both Messages and Activity (Activity for reactions). Discord emails it within a few hours to days.
 
 By default every run is a dry run: it previews what would be deleted and changes nothing. Add `--execute` (or confirm in the TUI) for a proper run.
-
-To try discord-delete without a package/token, download `demo/demo-package.zip` in this repo, which contains fake data.
 
 Then point discord-delete at your package:
 
