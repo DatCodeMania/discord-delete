@@ -62,13 +62,16 @@ func (m *pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.chosen, m.pkg = msg.path, msg.pkg
 		return m, tea.Quit
 	case tea.KeyMsg:
+		// Quitting stays live during a load: a wedged read (network mount, huge
+		// zip) would otherwise leave killing the process as the only way out.
+		if s := msg.String(); s == "ctrl+c" || s == "esc" {
+			m.quit = true
+			return m, tea.Quit
+		}
 		if m.loading {
 			return m, nil
 		}
 		switch msg.String() {
-		case "ctrl+c", "esc":
-			m.quit = true
-			return m, tea.Quit
 		case "enter":
 			p := cleanPickerPath(m.input.Value())
 			if p == "" {
@@ -104,7 +107,7 @@ func (m *pickerModel) View() string {
 
 	switch {
 	case m.loading:
-		b.WriteString(wrapText(stKeyHelp.Render("reading the package…"), m.width, 2) + "\n")
+		b.WriteString(wrapText(stKeyHelp.Render("reading the package… · esc quit"), m.width, 2) + "\n")
 	default:
 		b.WriteString(wrapText(stKeyHelp.Render("enter open · ctrl+v paste · esc quit"), m.width, 2) + "\n")
 	}

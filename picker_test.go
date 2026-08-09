@@ -82,6 +82,30 @@ func TestPickerLoadsPackage(t *testing.T) {
 	}
 }
 
+// TestPickerQuitsDuringLoad covers a load that never returns: the quit keys have
+// to stay live, and the result has to match a quit from the idle screen, since
+// runPicker reads chosen/pkg/quit off the model the program hands back.
+func TestPickerQuitsDuringLoad(t *testing.T) {
+	for _, key := range []tea.KeyMsg{{Type: tea.KeyCtrlC}, {Type: tea.KeyEsc}} {
+		m := newPickerModel()
+		m.input.SetValue(t.TempDir())
+		if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter}); cmd == nil || !m.loading {
+			t.Fatalf("%v: Enter should start a load", key)
+		}
+
+		_, cmd := m.Update(key)
+		if cmd == nil {
+			t.Fatalf("%v during a load should quit the picker program", key)
+		}
+		if _, ok := cmd().(tea.QuitMsg); !ok {
+			t.Fatalf("%v during a load should return tea.Quit", key)
+		}
+		if !m.quit || m.chosen != "" || m.pkg != nil {
+			t.Fatalf("%v during a load should read as a user quit, got quit=%v chosen=%q pkg=%+v", key, m.quit, m.chosen, m.pkg)
+		}
+	}
+}
+
 func TestPickerRejectsBadPackage(t *testing.T) {
 	m := newPickerModel()
 	m.input.SetValue(t.TempDir()) // empty dir: no messages

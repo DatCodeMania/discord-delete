@@ -41,6 +41,24 @@ func TestEstimate(t *testing.T) {
 	}
 }
 
+// --no-tui promises a non-interactive run, so it has to rule out both interactive
+// screens: a missing --package prints the help and exits rather than opening the
+// picker, and the run itself falls back to the plain path, terminal or not.
+func TestCanRunTUI(t *testing.T) {
+	if !canRunTUI(false, true) {
+		t.Fatal("a plain terminal run should reach the picker and the TUI")
+	}
+	if canRunTUI(true, true) {
+		t.Fatal("--no-tui must stay non-interactive, even on a terminal")
+	}
+	if canRunTUI(false, false) {
+		t.Fatal("no terminal means no interactive screen")
+	}
+	if canRunTUI(true, false) {
+		t.Fatal("--no-tui without a terminal must stay non-interactive")
+	}
+}
+
 func TestNounFor(t *testing.T) {
 	if nounFor("messages", 1) != "message" || nounFor("reactions", 2) != "reaction(s)" {
 		t.Fatalf("nounFor wrong: %q / %q", nounFor("messages", 1), nounFor("reactions", 2))

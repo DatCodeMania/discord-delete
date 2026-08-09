@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,6 +24,13 @@ const (
 	updateReleasesPage = "https://github.com/DatCodeMania/discord-delete/releases"
 	updateCheckEvery   = 24 * time.Hour
 	updateHTTPTimeout  = 3 * time.Second
+	// A failed check retries inside the day instead of waiting for the next daily
+	// window, but not so often that a blackholed network costs an
+	// updateHTTPTimeout stall on every headless launch.
+	updateRetryEvery = 6 * time.Hour
+	// Ceiling on the release JSON. Real payloads run a few KB even with many
+	// assets and long notes; this only stops an unbounded body.
+	updateMaxBody = 1 << 20
 )
 
 // updateLatestURL is the endpoint that reports the newest release tag.
@@ -38,18 +46,30 @@ func startUpdateCheck() <-chan string {
 }
 
 // updateNotice returns the notice line, or "" when up to date, disabled, or
-// failed. Network is hit at most once per updateCheckEvery; a failed attempt
-// is cached too, so an offline machine isn't probed every launch.
+// failed. Network is hit at most once per updateCheckEvery, or per
+// updateRetryEvery once a check has failed, so an offline machine isn't probed
+// every launch.
 func updateNotice(current string, now time.Time) string {
 	if current == "dev" || os.Getenv(updateCheckEnv) != "" {
 		return ""
 	}
 	cache := filepath.Join(progressDir(), "update-check")
 	checkedAt, latest := readUpdateCache(cache)
-	if now.Sub(checkedAt) >= updateCheckEvery {
+	// A tagless cache entry is a failed check, and it expires on the shorter
+	// interval; caching a failure like a success would make one bad response
+	// permanent.
+	every := updateCheckEvery
+	if latest == "" {
+		every = updateRetryEvery
+	}
+	if now.Sub(checkedAt) >= every {
 		ctx, cancel := context.WithTimeout(context.Background(), updateHTTPTimeout)
-		latest = fetchLatestTag(ctx)
+		tag, err := fetchLatestTag(ctx)
 		cancel()
+		latest = ""
+		if err == nil {
+			latest = tag
+		}
 		writeUpdateCache(cache, now, latest)
 	}
 	cur := strings.TrimPrefix(strings.TrimSpace(current), "v")
@@ -60,30 +80,46 @@ func updateNotice(current string, now time.Time) string {
 	return fmt.Sprintf("Update available: %s (you have %s) · %s", latest, cur, updateReleasesPage)
 }
 
-// fetchLatestTag returns the latest release's tag_name, or "" on any failure.
-func fetchLatestTag(ctx context.Context) string {
+// fetchLatestTag returns the latest release's tag_name from GitHub's
+// GET /repos/{owner}/{repo}/releases/latest. Every failure, including an
+// over-cap body, comes back as an error so the caller can retry it rather than
+// record it as "no release".
+func fetchLatestTag(ctx context.Context) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, updateLatestURL, nil)
 	if err != nil {
-		return ""
+		return "", err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	req.Header.Set("User-Agent", "discord-delete/"+buildVersion)
 	resp, err := (&http.Client{Timeout: updateHTTPTimeout}).Do(req)
 	if err != nil {
-		return ""
+		return "", err
 	}
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	// A LimitReader hits EOF at its bound exactly like a complete body, so read
+	// one byte past the cap to tell truncation from a whole response.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, updateMaxBody+1))
 	resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return ""
+	if err != nil {
+		return "", err
+	}
+	if len(body) > updateMaxBody {
+		return "", fmt.Errorf("release JSON over %d bytes", updateMaxBody)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("release lookup: %s", resp.Status)
 	}
 	var rel struct {
 		TagName string `json:"tag_name"`
 	}
-	if json.Unmarshal(body, &rel) != nil {
-		return ""
+	if err := json.Unmarshal(body, &rel); err != nil {
+		return "", err
 	}
-	return strings.TrimSpace(rel.TagName)
+	tag := strings.TrimSpace(rel.TagName)
+	if tag == "" {
+		return "", errors.New("release has no tag_name")
+	}
+	return tag, nil
 }
 
 // readUpdateCache parses "<RFC3339> <tag>"; a missing or malformed cache reads

@@ -120,11 +120,11 @@ func main() {
 	}
 
 	// Get the package. With one given, load it. With none, open the guided
-	// first-run picker (needs a terminal); without a terminal there's nothing to
-	// pick with, so explain how to supply one and point at the guide.
+	// first-run picker; when it can't open there's nothing to pick with, so
+	// explain how to supply one and point at the guide.
 	var pkg *LoadedPackage
 	if *pkgPath == "" {
-		if !isatty.IsTerminal(os.Stdout.Fd()) {
+		if !canRunTUI(*noTUI, isatty.IsTerminal(os.Stdout.Fd())) {
 			fmt.Fprintln(os.Stderr, noPackageHelp)
 			os.Exit(2)
 		}
@@ -210,7 +210,7 @@ func main() {
 	// The full TUI needs an interactive terminal. Without one (pipe/CI) or with
 	// --no-tui, fall back to a plain, non-interactive run using the CLI flags
 	// (saved config is a TUI convenience, so the plain path ignores it).
-	if *noTUI || !isatty.IsTerminal(os.Stdout.Fd()) {
+	if !canRunTUI(*noTUI, isatty.IsTerminal(os.Stdout.Fd())) {
 		if notice := <-updateCh; notice != "" {
 			fmt.Println("\033[2m" + notice + "\033[0m") // dim
 		}
@@ -269,8 +269,15 @@ func main() {
 	}
 }
 
-// noPackageHelp is printed when no package is given and there's no terminal to
-// open the guided picker in (a bare double-click with no console, a pipe, cron).
+// canRunTUI reports whether an interactive screen may open, gating both the
+// guided picker and the full TUI. --no-tui asks for a non-interactive run, so it
+// rules them out even on a terminal.
+func canRunTUI(noTUI, terminal bool) bool {
+	return !noTUI && terminal
+}
+
+// noPackageHelp is printed when no package is given and the guided picker cannot
+// open (a bare double-click with no console, a pipe, cron, or --no-tui).
 const noPackageHelp = `discord-delete needs a Discord data package to work with, and none was given.
 
 Run it from a terminal with no options to open the guided setup:

@@ -641,6 +641,18 @@ func (m *appModel) channelRows() []visRow {
 	return rows
 }
 
+// clampChanCursor pulls the tree cursor back onto a real row for a row set of n.
+// The search box reshapes the set without going through the tree key handler, so
+// an unclamped cursor indexes out of range and blanks the viewport.
+func (m *appModel) clampChanCursor(n int) {
+	if m.ccursor >= n {
+		m.ccursor = n - 1
+	}
+	if m.ccursor < 0 {
+		m.ccursor = 0
+	}
+}
+
 // guildState reports the aggregate check state of a guild: all / none / some.
 func (m *appModel) guildState(gi int) (all, none bool) {
 	guilds, raws, sel := m.scopeGuilds(), m.scopeRaws(), m.scopeSelected()
@@ -674,6 +686,7 @@ func (m *appModel) updateChannels(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		var cmd tea.Cmd
 		m.search, cmd = m.search.Update(msg)
+		m.clampChanCursor(len(m.channelRows()))
 		return m, cmd
 	}
 
@@ -689,9 +702,7 @@ func (m *appModel) updateChannels(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if m.ccursor >= len(rows) {
-		m.ccursor = len(rows) - 1
-	}
+	m.clampChanCursor(len(rows))
 	cur := rows[m.ccursor]
 	guilds, raws, sel := m.scopeGuilds(), m.scopeRaws(), m.scopeSelected()
 
@@ -781,11 +792,13 @@ func (m *appModel) treeBody(innerW int) string {
 		return stDim.Render("no channels match the search")
 	}
 	guilds, raws, sel, noun := m.scopeGuilds(), m.scopeRaws(), m.scopeSelected(), m.scopeNoun()
-	// Viewport: keeps the cursor within a visible window.
+	// Viewport: keeps the cursor within a visible window. The clamped copy makes
+	// a window past the last row impossible whatever state ccursor is in.
 	const window = 14
+	cur := clampInt(m.ccursor, 0, len(rows)-1)
 	start := 0
-	if m.ccursor >= window {
-		start = m.ccursor - window + 1
+	if cur >= window {
+		start = cur - window + 1
 	}
 	end := start + window
 	if end > len(rows) {
@@ -795,7 +808,7 @@ func (m *appModel) treeBody(innerW int) string {
 	for i := start; i < end; i++ {
 		r := rows[i]
 		cursor := "  "
-		if i == m.ccursor {
+		if i == cur {
 			cursor = stFrost.Render("› ")
 		}
 		if r.chIdx == -1 {
