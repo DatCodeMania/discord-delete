@@ -10,13 +10,21 @@ import (
 
 func TestCleanPickerPath(t *testing.T) {
 	home, _ := os.UserHomeDir()
-	cases := []struct{ in, want string }{
+	type tcase struct{ in, want string }
+	cases := []tcase{
 		{"  /tmp/pkg.zip  ", "/tmp/pkg.zip"},
 		{`"/tmp/my pkg.zip"`, "/tmp/my pkg.zip"},
 		{"'/tmp/pkg.zip'", "/tmp/pkg.zip"},
 		{`/tmp/my\ pkg.zip`, "/tmp/my pkg.zip"},
+		{"~", home},
 		{"~/pkg.zip", filepath.Join(home, "pkg.zip")},
 		{"", ""},
+	}
+	// The same input is a home prefix on Windows and an ordinary filename on Unix.
+	if os.IsPathSeparator('\\') {
+		cases = append(cases, tcase{`~\pkg.zip`, filepath.Join(home, "pkg.zip")})
+	} else {
+		cases = append(cases, tcase{`~\pkg.zip`, `~\pkg.zip`})
 	}
 	for _, c := range cases {
 		if got := cleanPickerPath(c.in); got != c.want {

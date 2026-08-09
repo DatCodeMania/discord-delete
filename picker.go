@@ -177,7 +177,9 @@ func cleanPickerPath(s string) string {
 	}
 	s = strings.ReplaceAll(s, `\ `, " ")
 	s = strings.TrimSpace(s)
-	if s == "~" || strings.HasPrefix(s, "~/") {
+	// A backslash is a legal filename character on Unix, so "~\" is a home
+	// prefix only on Windows.
+	if s == "~" || (len(s) > 1 && s[0] == '~' && os.IsPathSeparator(s[1])) {
 		if home, err := os.UserHomeDir(); err == nil {
 			s = filepath.Join(home, s[1:])
 		}
