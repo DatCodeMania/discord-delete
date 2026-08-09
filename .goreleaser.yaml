@@ -94,6 +94,10 @@ checksum:
 changelog:
   use: github-native
 
+release:
+  # A re-run re-uploads every asset, and GitHub 422s the ones already attached.
+  replace_existing_artifacts: true
+
 homebrew_casks:
   - repository:
       owner: DatCodeMania
