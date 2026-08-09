@@ -24,6 +24,9 @@ discord-delete reads the exact channel and message IDs from your data package so
 
 ## Install
 
+> [!NOTE]
+> [AUR pushes are currently disabled](https://archlinux.org/news/active-aur-malicious-packages-incident/). It is suggested to install using an alternate method.
+
 - **AUR** (Arch)
 
   Any AUR helper for `discord-delete-bin`:
