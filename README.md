@@ -61,7 +61,7 @@ discord-delete reads the exact channel and message IDs from your data package so
 
 - **Binary releases** (any platform)
 
-  Download the official binaries from the [releases page](https://github.com/DatCodeMania/discord-delete/releases).
+  Download the official binaries from the [releases page](https://github.com/DatCodeMania/discord-delete/releases). Each archive contains a launcher which you can use to launch, by double-clicking from a file manager.
 
 - **Go** (1.26+)
 
