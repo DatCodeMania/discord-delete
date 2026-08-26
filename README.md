@@ -250,6 +250,10 @@ discord-delete --package package.zip --reactions --run-order reactions  # reacti
 discord-delete --package package.zip --no-messages --no-tui --reaction-channel 1097843025518923776,1099156482310307840 --reaction-delay 1.5
 ```
 
+## Why this exists
+
+Under GDPR Article 17 I asked Discord to erase my messages. They agreed only to delete the ones I no longer had access to, if I provided specific message IDs. For the rest, they offered account deletion (which just relabels messages to "Deleted User"), or manual deletion. I had 400,000+ messages on my account and value my time, so I wrote discord-delete.
+
 ## How it works
 
 Your data package holds the exact channel and message IDs for everything you posted, so discord-delete never has to search. It sends one DELETE per item to Discord's REST API, the same endpoint the client uses, and reads the response to decide what to do next.
@@ -309,6 +313,10 @@ The two most popular alternatives are below, both browser-based. A large account
 - Discord takes a few hours to a few days to send the package. The only way to speed it up is to request less: Messages for messages, Activity for reactions.
 - The package covers what existed when Discord built it. Anything posted after that is not in it, so if you ever intend to re-delete you must request a fresh one.
 - discord-delete does not delete other people's messages, even where you have Manage Messages.
+
+## Questions and bugs
+
+Questions go in [Discussions](https://github.com/DatCodeMania/discord-delete/discussions), bug reports in [Issues](https://github.com/DatCodeMania/discord-delete/issues).
 
 ## License
 
