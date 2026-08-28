@@ -82,8 +82,14 @@ type Stats struct {
 	workers   []WorkerStatus
 	errRing   []string
 	statusLn  string
+	recent    []int64                   // unixnano deletion times inside rateWindow, oldest first
 	forbidden map[string]*ForbiddenStat // channelID -> 403 tally + Discord's reason
 }
+
+// rateWindow sizes the recent-rate window. Deletes are paced at roughly human
+// speed (seconds apart per channel, wider under backoff), so a minute holds
+// enough events to read steady while a stall still decays to zero within it.
+const rateWindow = time.Minute
 
 // ForbiddenStat is the per-channel record of 403 (undeletable) responses: how
 // many, and the reason Discord gave (its error "message", e.g. "Missing
@@ -101,7 +107,44 @@ func NewStats(total, workers int) *Stats {
 	}
 }
 
-func (s *Stats) addDeleted() { atomic.AddInt64(&s.deleted, 1) }
+func (s *Stats) addDeleted() {
+	atomic.AddInt64(&s.deleted, 1)
+	s.noteDeleted(time.Now().UnixNano())
+}
+
+func (s *Stats) noteDeleted(nano int64) {
+	s.mu.Lock()
+	s.recent = append(s.recent, nano)
+	s.pruneRecentLocked(nano)
+	s.mu.Unlock()
+}
+
+func (s *Stats) pruneRecentLocked(nano int64) {
+	cut := nano - int64(rateWindow)
+	i := 0
+	for i < len(s.recent) && s.recent[i] < cut {
+		i++
+	}
+	s.recent = s.recent[i:]
+}
+
+// recentRate is deletions/sec over the trailing rateWindow (the whole run while
+// it is younger than that), so a stall reads as a drop toward zero.
+func (s *Stats) recentRate(nano int64) float64 {
+	window := time.Duration(nano - s.startNano)
+	if window > rateWindow {
+		window = rateWindow
+	}
+	if window <= 0 {
+		return 0
+	}
+	s.mu.Lock()
+	s.pruneRecentLocked(nano)
+	n := len(s.recent)
+	s.mu.Unlock()
+	return float64(n) / window.Seconds()
+}
+
 func (s *Stats) addSkipped() { atomic.AddInt64(&s.skipped, 1) }
 func (s *Stats) addFailed()  { atomic.AddInt64(&s.failed, 1) }
 
@@ -157,7 +200,8 @@ type Snapshot struct {
 	Total, Deleted, Skipped, Failed int64
 	Processed                       int64
 	Elapsed                         time.Duration
-	Rate                            float64 // deletions/sec
+	Rate                            float64 // deletions/sec, run average (the ETA basis)
+	RecentRate                      float64 // deletions/sec over the trailing rateWindow
 	ETA                             time.Duration
 	Workers                         []WorkerStatus
 	Errors                          []string
@@ -173,7 +217,8 @@ func (s *Stats) Snapshot() Snapshot {
 	skipped := atomic.LoadInt64(&s.skipped)
 	failed := atomic.LoadInt64(&s.failed)
 	processed := deleted + skipped + failed
-	elapsed := time.Duration(time.Now().UnixNano() - s.startNano)
+	nowNano := time.Now().UnixNano()
+	elapsed := time.Duration(nowNano - s.startNano)
 	rate := 0.0
 	if elapsed > 0 {
 		rate = float64(deleted) / elapsed.Seconds()
@@ -199,7 +244,7 @@ func (s *Stats) Snapshot() Snapshot {
 	s.mu.Unlock()
 	return Snapshot{
 		Total: s.total, Deleted: deleted, Skipped: skipped, Failed: failed,
-		Processed: processed, Elapsed: elapsed, Rate: rate, ETA: eta,
+		Processed: processed, Elapsed: elapsed, Rate: rate, RecentRate: s.recentRate(nowNano), ETA: eta,
 		Workers: workers, Errors: errs, Status: status,
 		Finished: s.finished.Load(), Completed: s.completed.Load(), Aborted: s.aborted.Load(),
 		Forbidden:     forbidden,
@@ -426,6 +471,17 @@ func (e *Engine) Run(ctx context.Context, jobs []ChannelJob) {
 	if ctx.Err() == nil {
 		e.stats.completed.Store(true)
 	}
+}
+
+// RunAsync starts Run in the background and returns a channel closed when it
+// returns, after which no worker can still call OnDeleted.
+func (e *Engine) RunAsync(ctx context.Context, jobs []ChannelJob) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.Run(ctx, jobs)
+	}()
+	return done
 }
 
 func (e *Engine) runChannel(ctx context.Context, workerID int, job ChannelJob) {

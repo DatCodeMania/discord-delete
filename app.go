@@ -60,6 +60,13 @@ type runConfig struct {
 	reactionDelay  float64 // per-channel spacing floor for reactions (seconds)
 }
 
+// minInterval is the account-wide request spacing that maxRPS implies. The
+// clamp holds it under Discord's ~50/s limit however the flag or config file
+// is set.
+func (c runConfig) minInterval() time.Duration {
+	return time.Duration(float64(time.Second) / clampFloat(c.maxRPS, 1, 49))
+}
+
 // appModel is the whole TUI: a small state machine over the screens above,
 // sharing one loaded package and one live-filtered preview.
 type appModel struct {
@@ -106,6 +113,7 @@ type appModel struct {
 	savedToken     string // the token value currently persisted, to avoid re-saving
 	tokenFromStore bool
 	storeNote      string // short status from the last save/forget, shown in Configure
+	storeFailed    bool   // the last save attempt errored, so nothing was written
 
 	// ntfy test ping: result of the notification sent when the topic is entered
 	ntfyNote string
@@ -115,7 +123,8 @@ type appModel struct {
 	done     map[string]bool
 	progPath string
 	progLog  *progressLog
-	resumed  int // count of package messages already deleted in a prior run
+	engDone  <-chan struct{} // closed when the phase's Engine.Run returns; gates progLog close
+	resumed  int             // count of package messages already deleted in a prior run
 
 	// reactions (from Activity/reporting), parallel to the message fields
 	caps          PackageCapabilities
@@ -151,15 +160,16 @@ type appModel struct {
 	typeCounts map[string]int // static per-type message tallies
 
 	// running screen
-	stats    *Stats
-	eng      *Engine // live handle for pause/resume + pacing hotkeys
-	paused   bool
-	cancel   context.CancelFunc
-	prog     progress.Model
-	started  bool
-	rateHist []float64 // recent deletions/sec samples for the sparkline
-	logWarn  string    // resume-log failure notice; "" while the log is healthy
-	cfb      *cfBudget // Cloudflare invalid-response window; one per process, not per phase
+	stats      *Stats
+	eng        *Engine // live handle for pause/resume + pacing hotkeys
+	paused     bool
+	cancel     context.CancelFunc
+	prog       progress.Model
+	started    bool
+	rateHist   []float64 // recent deletions/sec samples for the sparkline
+	rateSample time.Time // when the last sparkline sample was taken
+	logWarn    string    // resume-log failure notice; "" while the log is healthy
+	cfb        *cfBudget // Cloudflare invalid-response window; one per process, not per phase
 
 	// ntfy progress + remote control (execute runs with ntfy set)
 	lastNotify time.Time       // when the last progress ntfy went out
@@ -379,6 +389,18 @@ func (m *appModel) setReactions(reactions []Reaction, guildNames map[string]stri
 	m.recompute()
 }
 
+// storedTokenExists reports whether the keyring holds a token for this account.
+func (m *appModel) storedTokenExists() bool {
+	return m.stateKey != "" && hasStoredToken(m.stateKey)
+}
+
+// currentTokenStored reports whether the token in hand is the one the keyring
+// holds; savedToken tracks the value that was written.
+func (m *appModel) currentTokenStored() bool {
+	tok := strings.TrimSpace(m.cfg.token)
+	return tok != "" && tok == m.savedToken && m.storedTokenExists()
+}
+
 // maybeSaveToken persists the current token to the OS keyring when "remember" is
 // on and the token validated, deduping against what's already stored.
 func (m *appModel) maybeSaveToken() {
@@ -391,10 +413,11 @@ func (m *appModel) maybeSaveToken() {
 	}
 	backend, err := saveToken(m.stateKey, tok)
 	if err != nil {
+		m.storeFailed = true
 		m.storeNote = "not remembered: " + err.Error()
 		return
 	}
-	m.savedToken = tok
+	m.savedToken, m.storeFailed = tok, false
 	m.storeNote = "token remembered (" + backend + ")"
 }
 
@@ -407,7 +430,7 @@ func (m *appModel) forgetStoredToken() {
 		m.storeNote = "forget failed: " + err.Error()
 		return
 	}
-	m.savedToken, m.tokenFromStore = "", false
+	m.savedToken, m.tokenFromStore, m.storeFailed = "", false, false
 	m.storeNote = "stored token forgotten"
 }
 
@@ -432,8 +455,27 @@ func (m *appModel) resetDefaults() {
 	m.recompute()
 }
 
+// previewETA is the preflight runtime for the whole run. Phases run one after
+// the other, so their estimates add, each at its own per-channel floor under
+// the account-wide request cap.
 func (m *appModel) previewETA() time.Duration {
-	return estimate(m.jobs, m.cfg.workers, time.Duration(m.cfg.delay*float64(time.Second)))
+	var total time.Duration
+	for _, p := range m.plannedPhases() {
+		total += estimate(p.jobs, m.cfg.workers, p.floor, m.cfg.maxRPS)
+	}
+	return total
+}
+
+// phaseRate is a phase's preflight throughput: its per-channel floor spread
+// across the workers, capped by the account-wide request limit.
+func (m *appModel) phaseRate(floor time.Duration) float64 {
+	rate := m.cfg.maxRPS
+	if s := floor.Seconds(); s > 0 {
+		if t := float64(m.cfg.workers) / s; t < rate {
+			rate = t
+		}
+	}
+	return rate
 }
 
 // --- top-level Update ------------------------------------------------------
@@ -447,9 +489,14 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		if m.screen == scRunning {
 			snap := m.stats.Snapshot()
-			m.rateHist = append(m.rateHist, snap.Rate)
-			if len(m.rateHist) > 120 {
-				m.rateHist = m.rateHist[len(m.rateHist)-120:]
+			// One sample per second: the sparkline's 120 slots then cover two
+			// minutes, enough to watch a stall decay across the rate window.
+			if time.Since(m.rateSample) >= time.Second {
+				m.rateSample = time.Now()
+				m.rateHist = append(m.rateHist, snap.RecentRate)
+				if len(m.rateHist) > 120 {
+					m.rateHist = m.rateHist[len(m.rateHist)-120:]
+				}
 			}
 			m.noteLogErr()
 			if snap.Finished || snap.Aborted {
@@ -462,7 +509,9 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// phase would start on the already-cancelled context.
 				m.phaseResults = append(m.phaseResults, m.phaseResult(snap))
 				if m.progLog != nil {
-					m.progLog.close()
+					// An abort tick can land while workers are still exiting;
+					// closeAfterEngine holds the close until they have.
+					closeAfterEngine(m.progLog, m.engDone)
 					m.noteLogErr()
 					m.progLog = nil
 				}
@@ -612,17 +661,18 @@ type phasePlan struct {
 	logPath string
 }
 
-// buildPhases assembles the run's phases from the selected targets, in the
-// configured order (messages first by default).
-func (m *appModel) buildPhases() []phasePlan {
+// plannedPhases lists the enabled phases in the configured order (messages
+// first by default), each with its own per-channel floor, whether or not the
+// current filters leave it any work.
+func (m *appModel) plannedPhases() []phasePlan {
 	var msg, react *phasePlan
-	if m.cfg.delMessages && m.total > 0 {
+	if m.cfg.delMessages {
 		msg = &phasePlan{
 			kind: "messages", jobs: m.jobs, total: m.total,
 			floor: time.Duration(m.cfg.delay * float64(time.Second)), logPath: m.progPath,
 		}
 	}
-	if m.cfg.delReactions && m.reactTotal > 0 {
+	if m.cfg.delReactions {
 		react = &phasePlan{
 			kind: "reactions", jobs: m.reactJobs, total: m.reactTotal,
 			floor: time.Duration(m.cfg.reactionDelay * float64(time.Second)), logPath: m.reactProgPath,
@@ -638,6 +688,18 @@ func (m *appModel) buildPhases() []phasePlan {
 	}
 	if second != nil {
 		out = append(out, *second)
+	}
+	return out
+}
+
+// buildPhases is plannedPhases minus the phases the filters left empty, which
+// is what a run actually executes.
+func (m *appModel) buildPhases() []phasePlan {
+	var out []phasePlan
+	for _, p := range m.plannedPhases() {
+		if p.total > 0 {
+			out = append(out, p)
+		}
 	}
 	return out
 }
@@ -678,7 +740,7 @@ func (m *appModel) launchEngine() (tea.Model, tea.Cmd) {
 				case <-ctx.Done():
 				}
 			})
-			cmds = append(cmds, waitControl(ch))
+			cmds = append(cmds, m.rearmControl())
 		}
 	}
 	cmds = append(cmds, m.startPhase(0))
@@ -690,8 +752,9 @@ func (m *appModel) startPhase(i int) tea.Cmd {
 	p := m.phases[i]
 	m.stats = NewStats(p.total, m.cfg.workers)
 	m.rateHist = nil // each phase gets its own sparkline history
+	m.rateSample = time.Time{}
 	if m.progLog != nil {
-		m.progLog.close()
+		closeAfterEngine(m.progLog, m.engDone)
 		m.progLog = nil
 	}
 	var onDeleted func(string)
@@ -705,14 +768,13 @@ func (m *appModel) startPhase(i int) tea.Cmd {
 			m.logWarn = "resume log unavailable (" + err.Error() + "): this phase's deletions will be re-attempted on the next run"
 		}
 	}
-	minInterval := time.Duration(float64(time.Second) / clampFloat(m.cfg.maxRPS, 1, 49))
 	m.eng = NewEngine(EngineConfig{
 		Token:             strings.TrimSpace(m.cfg.token),
 		Workers:           m.cfg.workers,
 		DeleteDelay:       p.floor,
 		Jitter:            m.cfg.jitter,
 		DryRun:            !m.cfg.execute,
-		GlobalMinInterval: minInterval,
+		GlobalMinInterval: m.cfg.minInterval(),
 		OnDeleted:         onDeleted,
 		CF:                m.cfb,
 	}, m.stats)
@@ -720,7 +782,7 @@ func (m *appModel) startPhase(i int) tea.Cmd {
 	m.pausePend = false
 	m.eng.setPaused(m.paused)
 	m.lastNotify = time.Now()
-	go m.eng.Run(m.runCtx, p.jobs)
+	m.engDone = m.eng.RunAsync(m.runCtx, p.jobs)
 	if m.paused {
 		// The pause was taken at the boundary with no engine to hold it; confirm
 		// it to the phone now that one does.
@@ -763,20 +825,27 @@ type controlMsg struct{ cmd controlCmd }
 
 // waitControl blocks on the control channel and delivers the next command. It's
 // re-armed after each command so the stream keeps flowing while the run is live.
-func waitControl(ch chan controlCmd) tea.Cmd {
+// The run's context releases the last one: the sender picks its send off that
+// same context, so the channel stays open and nothing can be sent past the end
+// of the run.
+func waitControl(ctx context.Context, ch chan controlCmd) tea.Cmd {
 	return func() tea.Msg {
-		c, ok := <-ch
-		if !ok {
+		select {
+		case c, ok := <-ch:
+			if !ok {
+				return nil
+			}
+			return controlMsg{cmd: c}
+		case <-ctx.Done():
 			return nil
 		}
-		return controlMsg{cmd: c}
 	}
 }
 
 // rearmControl re-issues the control listener, or nil if control isn't active.
 func (m *appModel) rearmControl() tea.Cmd {
-	if m.controlOn && m.controlCh != nil {
-		return waitControl(m.controlCh)
+	if m.controlOn && m.controlCh != nil && m.runCtx != nil {
+		return waitControl(m.runCtx, m.controlCh)
 	}
 	return nil
 }
@@ -857,7 +926,7 @@ func (m *appModel) progressNotifyCmd(paused bool) tea.Cmd {
 	if target == "" || !m.cfg.execute || m.stats == nil {
 		return nil
 	}
-	msg := runningNtfy(m.pkgName, m.stats.Snapshot(), paused, controlTarget(target))
+	msg := runningNtfy(m.pkgName, m.phaseKind(), m.stats.Snapshot(), paused, controlTarget(target))
 	return func() tea.Msg {
 		_ = postNtfy(context.Background(), target, msg)
 		return nil
@@ -875,11 +944,7 @@ func (m *appModel) notifyExit() {
 	// Report finished phases plus the in-flight one under its real kind, so a
 	// quit mid-reactions isn't pushed as "N messages deleted".
 	results := append([]opResult{}, m.phaseResults...)
-	kind := "messages"
-	if m.phaseIdx >= 0 && m.phaseIdx < len(m.phases) {
-		kind = m.phases[m.phaseIdx].kind
-	}
-	results = append(results, opResult{Kind: kind, Snap: m.stats.Snapshot()})
+	results = append(results, opResult{Kind: m.phaseKind(), Snap: m.stats.Snapshot()})
 	r := runReport{
 		Package:   m.pkgName,
 		Execute:   m.cfg.execute,
@@ -990,7 +1055,7 @@ type openDoneMsg struct {
 // run (or the returning home preview) reflects what this run deleted.
 func (m *appModel) finishRun() {
 	if m.progLog != nil {
-		m.progLog.close()
+		closeAfterEngine(m.progLog, m.engDone)
 		if err := m.progLog.writeErr(); err != nil && m.perr == "" {
 			m.perr = "Resume log write failed (" + err.Error() + "). Deletions after the failure were not recorded and will be re-attempted on the next run."
 		}
@@ -998,11 +1063,9 @@ func (m *appModel) finishRun() {
 	}
 	// A run only aborts on repeated 401, which means the token has almost
 	// certainly rotated. Drop the stored copy, but only when the rejected token
-	// is the stored one (savedToken tracks what the keyring holds): an abort on
-	// a pasted or flag token says nothing about a good token in the store.
-	tok := strings.TrimSpace(m.cfg.token)
-	if m.stats != nil && m.stats.Snapshot().Aborted && m.stateKey != "" &&
-		tok != "" && tok == m.savedToken && hasStoredToken(m.stateKey) {
+	// is the stored one: an abort on a pasted or flag token says nothing about
+	// a good token in the store.
+	if m.stats != nil && m.stats.Snapshot().Aborted && m.currentTokenStored() {
 		if err := forgetToken(m.stateKey); err == nil {
 			m.savedToken, m.tokenFromStore = "", false
 			m.perr = "The stored token was rejected (401) and has been forgotten. Re-authenticate before the next run."
@@ -1139,11 +1202,8 @@ func (m *appModel) viewRunning() (string, hitBox) {
 	var b strings.Builder
 	var hit hitBox
 
-	kind, noun := "messages", "messages"
-	if m.phaseIdx < len(m.phases) {
-		kind = m.phases[m.phaseIdx].kind
-		noun = kind
-	}
+	kind := m.phaseKind()
+	noun := kind
 	sub := "removing " + kind
 	if !m.cfg.execute {
 		sub = "dry run: " + kind
@@ -1276,15 +1336,34 @@ func (m *appModel) tallyBody(snap Snapshot) string {
 	}, "\n")
 }
 
+// phaseKind is the in-flight phase's kind ("messages" or "reactions"),
+// defaulting to messages.
+func (m *appModel) phaseKind() string {
+	if m.phaseIdx >= 0 && m.phaseIdx < len(m.phases) {
+		return m.phases[m.phaseIdx].kind
+	}
+	return "messages"
+}
+
+// perSecUnit is the rate unit for a phase kind.
+func perSecUnit(kind string) string {
+	if kind == "reactions" {
+		return "reactions/s"
+	}
+	return "msg/s"
+}
+
 func (m *appModel) rateBody(snap Snapshot, col int) string {
 	spark := sparkline(m.rateHist, col-4, nord14)
 	errFrac := 0.0
 	if snap.Processed > 0 {
 		errFrac = float64(snap.Failed) / float64(snap.Processed)
 	}
+	unit := perSecUnit(m.phaseKind())
 	return strings.Join([]string{
-		stGreen.Render(fmt.Sprintf("%.2f", snap.Rate)) + stDim.Render(" msg/s now"),
+		stGreen.Render(fmt.Sprintf("%.2f", snap.RecentRate)) + stDim.Render(" "+unit+" now"),
 		spark,
+		kv("avg", 8, stFrost.Render(fmt.Sprintf("%.2f %s", snap.Rate, unit))),
 		kv("errors", 8, stRed.Render(fmt.Sprintf("%.1f%%", errFrac*100))),
 	}, "\n")
 }
@@ -1395,18 +1474,31 @@ func (m *appModel) targetBody() string {
 }
 
 func (m *appModel) planBody() string {
-	tp := m.cfg.maxRPS
-	if m.cfg.delay > 0 {
-		if t := float64(m.cfg.workers) / m.cfg.delay; t < tp {
-			tp = t
+	phases := m.plannedPhases()
+	rows := []string{kv("est. time", 11, stFrost.Render(fmtDur(m.previewETA())))}
+	workers := kv("workers", 11, stValue.Render(fmt.Sprint(m.cfg.workers)))
+	if len(phases) > 1 {
+		// Reactions pace on their own floor, so a single rate would misstate
+		// one of the two phases.
+		for _, p := range phases {
+			rows = append(rows, kv(p.kind, 11,
+				stFrost.Render(fmt.Sprintf("~%.1f/s", m.phaseRate(p.floor)))+
+					stDim.Render(fmt.Sprintf("  ~%.1fs each", p.floor.Seconds()))))
+		}
+		return strings.Join(append(rows, workers), "\n")
+	}
+	floor, noun := time.Duration(m.cfg.delay*float64(time.Second)), "msg"
+	if len(phases) == 1 {
+		floor = phases[0].floor
+		if phases[0].kind == "reactions" {
+			noun = "react"
 		}
 	}
-	return strings.Join([]string{
-		kv("est. time", 11, stFrost.Render(fmtDur(m.previewETA()))),
-		kv("throughput", 11, stFrost.Render(fmt.Sprintf("~%.1f msg/s", tp))),
-		kv("workers", 11, stValue.Render(fmt.Sprint(m.cfg.workers))),
-		kv("pace", 11, stDim.Render(fmt.Sprintf("~%.1fs / delete", m.cfg.delay))),
-	}, "\n")
+	rows = append(rows,
+		kv("throughput", 11, stFrost.Render(fmt.Sprintf("~%.1f %s/s", m.phaseRate(floor), noun))),
+		workers,
+		kv("pace", 11, stDim.Render(fmt.Sprintf("~%.1fs / delete", floor.Seconds()))))
+	return strings.Join(rows, "\n")
 }
 
 func (m *appModel) selectionBody(width int) string {

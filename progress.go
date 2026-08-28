@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Crash-safe resume log. The data package is never modified, so to avoid
@@ -134,6 +135,27 @@ func (p *progressLog) close() {
 	if err := p.f.Close(); err != nil && p.err == nil {
 		p.err = err
 	}
+}
+
+// progressDrainWait caps how long a close waits for engine workers to exit.
+// On expiry the close proceeds anyway; a straggler record then hits the sticky
+// write error and its deletion repeats on the next run.
+const progressDrainWait = 5 * time.Second
+
+// closeAfterEngine closes pl only once done (from Engine.RunAsync) is closed,
+// so no worker's record races the close. Callers cancel the run first, which
+// keeps the wait short; it is capped at progressDrainWait regardless.
+func closeAfterEngine(pl *progressLog, done <-chan struct{}) {
+	if pl == nil {
+		return
+	}
+	if done != nil {
+		select {
+		case <-done:
+		case <-time.After(progressDrainWait):
+		}
+	}
+	pl.close()
 }
 
 // probeProgressLog checks that the log can be created and opened for append,

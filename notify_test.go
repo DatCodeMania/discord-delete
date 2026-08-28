@@ -88,7 +88,7 @@ func TestRunningNtfy(t *testing.T) {
 	snap := Snapshot{Total: 1000, Deleted: 250, Skipped: 10, Failed: 2, Processed: 262, Rate: 3.5}
 	ctl := "https://ntfy.sh/x-ctl"
 
-	run := runningNtfy("mypkg.zip", snap, false, ctl)
+	run := runningNtfy("mypkg.zip", "messages", snap, false, ctl)
 	if !strings.Contains(run.body, "26.2%") || !strings.Contains(run.body, "250 of 1,000") {
 		t.Errorf("running body missing progress: %q", run.body)
 	}
@@ -99,15 +99,20 @@ func TestRunningNtfy(t *testing.T) {
 		t.Errorf("running should offer a pause button, got %+v", run.actions)
 	}
 
-	paused := runningNtfy("mypkg.zip", snap, true, ctl)
+	paused := runningNtfy("mypkg.zip", "messages", snap, true, ctl)
 	if len(paused.actions) != 2 || paused.actions[0].body != "resume" {
 		t.Errorf("paused should offer a resume button, got %+v", paused.actions)
 	}
 
 	// With no control target, progress still renders but carries no buttons.
-	noctl := runningNtfy("", snap, false, "")
+	noctl := runningNtfy("", "messages", snap, false, "")
 	if len(noctl.actions) != 0 {
 		t.Errorf("no control target should mean no buttons, got %+v", noctl.actions)
+	}
+
+	react := runningNtfy("mypkg.zip", "reactions", snap, false, ctl)
+	if !strings.Contains(react.body, "reactions/s") || strings.Contains(react.body, "msg/s") {
+		t.Errorf("reactions phase should label the rate reactions/s: %q", react.body)
 	}
 }
 
@@ -118,7 +123,7 @@ func TestRunningNtfyOmitsErrorText(t *testing.T) {
 		Total: 100, Deleted: 50, Failed: 3, Processed: 53,
 		Errors: []string{"delete 123456789012345678: HTTP 400 secret response body"},
 	}
-	m := runningNtfy("pkg.zip", snap, false, "")
+	m := runningNtfy("pkg.zip", "messages", snap, false, "")
 	for _, leak := range []string{"123456789012345678", "secret", "last error"} {
 		if strings.Contains(m.body, leak) {
 			t.Errorf("notification body leaks %q: %q", leak, m.body)

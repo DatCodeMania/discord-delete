@@ -27,17 +27,31 @@ func TestToSet(t *testing.T) {
 	}
 }
 
-// estimate packs channels onto workers greedily; runtime is the fullest bucket.
+// estimate is the binding constraint: the fullest worker bucket at the
+// per-channel floor, or the whole batch at the account-wide request cap.
 func TestEstimate(t *testing.T) {
 	jobs := []ChannelJob{
 		{MsgIDs: make([]string, 10)},
 		{MsgIDs: make([]string, 10)},
 	}
-	if got := estimate(jobs, 2, time.Second); got != 10*time.Second {
+	if got := estimate(jobs, 2, time.Second, 25); got != 10*time.Second {
 		t.Fatalf("2 workers: want 10s, got %v", got)
 	}
-	if got := estimate(jobs, 1, time.Second); got != 20*time.Second {
+	if got := estimate(jobs, 1, time.Second, 25); got != 20*time.Second {
 		t.Fatalf("1 worker: want 20s, got %v", got)
+	}
+	// One big channel is floor-limited no matter how high the cap.
+	big := []ChannelJob{{MsgIDs: make([]string, 100)}}
+	if got := estimate(big, 8, time.Second, 49); got != 100*time.Second {
+		t.Fatalf("single channel: want 100s, got %v", got)
+	}
+	// Many small channels saturate the account-wide cap before the floor.
+	small := make([]ChannelJob, 50)
+	for i := range small {
+		small[i] = ChannelJob{MsgIDs: make([]string, 1)}
+	}
+	if got := estimate(small, 8, time.Second, 5); got != 10*time.Second {
+		t.Fatalf("50 msgs at 5/s: want 10s, got %v", got)
 	}
 }
 

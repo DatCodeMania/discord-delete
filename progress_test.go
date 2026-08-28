@@ -195,3 +195,55 @@ func TestProbeProgressLog(t *testing.T) {
 		t.Fatal("probe should fail when the log directory cannot be created")
 	}
 }
+
+// A worker can be between its 204 and its record call when the run is
+// cancelled; the close must wait for Engine.Run to return so that record
+// still lands. Mirrors drivePlainPhase's shutdown ordering.
+func TestShutdownRecordSurvivesClose(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(204)
+	}))
+	defer srv.Close()
+	apiBaseOverride = srv.URL
+	t.Cleanup(func() { apiBaseOverride = "" })
+
+	path := filepath.Join(t.TempDir(), "deleted.log")
+	pl, err := openProgressLog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inRecord := make(chan struct{})
+	release := make(chan struct{})
+	eng := NewEngine(EngineConfig{
+		Workers: 1, DeleteDelay: time.Millisecond, GlobalMinInterval: time.Millisecond,
+		OnDeleted: func(id string) {
+			close(inRecord) // parks the worker with its record still pending
+			<-release
+			pl.record(id)
+		},
+	}, NewStats(1, 1))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := eng.RunAsync(ctx, []ChannelJob{{ChannelID: "9", Label: "x", MsgIDs: []string{"1"}}})
+
+	<-inRecord
+	cancel()
+	closed := make(chan struct{})
+	go func() {
+		closeAfterEngine(pl, done)
+		close(closed)
+	}()
+	// The close must not proceed while the worker still holds its record; give
+	// a non-waiting close room to surface, then let the worker finish.
+	select {
+	case <-closed:
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(release)
+	<-closed
+	if err := pl.writeErr(); err != nil {
+		t.Fatalf("record raced the close: %v", err)
+	}
+	if set := loadProgressSet(path); !set["1"] {
+		t.Fatalf("shutdown record missing from resume log, set=%v", set)
+	}
+}

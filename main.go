@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"maps"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -205,7 +206,7 @@ func main() {
 		progPath: progPath, reactProgPath: reactProgPath,
 		reportOverride: *reportF, stateKey: stateKey,
 		tokenFromStore: loadedFromStore,
-	}
+	}.clone()
 
 	// The full TUI needs an interactive terminal. Without one (pipe/CI) or with
 	// --no-tui, fall back to a plain, non-interactive run using the CLI flags
@@ -338,6 +339,16 @@ type plainRun struct {
 	tokenFromStore bool // cfg.token came from the OS keyring, not a flag or env
 }
 
+// clone returns a plainRun that shares no map with the caller. The plain run is
+// the flag-only configuration, and both applyPersisted and the TUI rewrite the
+// selection and type maps in place.
+func (p plainRun) clone() plainRun {
+	p.cfg.typeSel = maps.Clone(p.cfg.typeSel)
+	p.sel = maps.Clone(p.sel)
+	p.reactSel = maps.Clone(p.reactSel)
+	return p
+}
+
 // plainPhase is one headless phase's plan: what to delete, the pacing floor, the
 // resume log to append to, and the channel metadata for the undeletable rollup.
 type plainPhase struct {
@@ -403,7 +414,7 @@ func runPlain(in plainRun) {
 	}
 
 	for _, p := range phases {
-		est := estimate(p.jobs, cfg.workers, p.floor)
+		est := estimate(p.jobs, cfg.workers, p.floor, cfg.maxRPS)
 		fmt.Printf("%s: %s %s across %d channel(s), est. runtime ~%s.\n",
 			p.kind, commafy(p.total), nounFor(p.kind, p.total), len(p.jobs), fmtDur(est))
 		if p.summary != "" {
@@ -579,19 +590,14 @@ func drivePlainPhase(cfg runConfig, p plainPhase, notify plainNotify, ctrl <-cha
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	stats := NewStats(p.total, cfg.workers)
-	minInterval := time.Duration(float64(time.Second) / clampFloat(cfg.maxRPS, 1, 49))
 
 	// Record confirmed-gone items so a later run resumes instead of re-requesting.
+	var pl *progressLog
 	var onDeleted func(string)
 	if cfg.execute {
-		if pl, err := openProgressLog(p.progPath); err == nil {
+		if opened, err := openProgressLog(p.progPath); err == nil {
+			pl = opened
 			onDeleted = pl.record
-			defer func() {
-				pl.close()
-				if werr := pl.writeErr(); werr != nil {
-					fmt.Fprintf(os.Stderr, "warning: resume log writes failed (%v); deletions after the failure will be re-attempted on the next run.\n", werr)
-				}
-			}()
 		} else {
 			// The preflight probe in runPlain passed, so the state dir broke
 			// mid-run; warn and carry on.
@@ -604,7 +610,7 @@ func drivePlainPhase(cfg runConfig, p plainPhase, notify plainNotify, ctrl <-cha
 		DeleteDelay:       p.floor,
 		Jitter:            cfg.jitter,
 		DryRun:            !cfg.execute,
-		GlobalMinInterval: minInterval,
+		GlobalMinInterval: cfg.minInterval(),
 		OnDeleted:         onDeleted,
 		CF:                cfb,
 	}, stats)
@@ -612,8 +618,15 @@ func drivePlainPhase(cfg runConfig, p plainPhase, notify plainNotify, ctrl <-cha
 		eng.setPaused(true)
 		fmt.Println("paused (remote)")
 	}
-	go eng.Run(ctx, p.jobs)
+	notify.kind = p.kind
+	done := eng.RunAsync(ctx, p.jobs)
 	plainReport(ctx, cancel, stats, eng, notify, ctrl)
+	// Workers can still call record until done closes: cancel, drain, then close.
+	cancel()
+	closeAfterEngine(pl, done)
+	if werr := pl.writeErr(); werr != nil {
+		fmt.Fprintf(os.Stderr, "warning: resume log writes failed (%v); deletions after the failure will be re-attempted on the next run.\n", werr)
+	}
 	return stats.Snapshot()
 }
 
@@ -750,6 +763,7 @@ type plainNotify struct {
 	target  string // resolved status URL ("" = notifications off)
 	control string // derived control URL for pause/resume/stop
 	pkg     string
+	kind    string        // in-flight phase kind, for the rate unit
 	every   time.Duration // 0 = periodic off (completion ping still fires in main)
 	execute bool
 }
@@ -787,7 +801,7 @@ func plainReport(ctx context.Context, cancel context.CancelFunc, stats *Stats, e
 		if n.target == "" {
 			return
 		}
-		_ = postNtfy(context.Background(), n.target, runningNtfy(n.pkg, stats.Snapshot(), paused, n.control))
+		_ = postNtfy(context.Background(), n.target, runningNtfy(n.pkg, n.kind, stats.Snapshot(), paused, n.control))
 	}
 	periodic := func() {
 		if !n.execute || n.every <= 0 || n.target == "" {
@@ -867,13 +881,14 @@ func filterSummary(f Filter, order string) string {
 	return "Filters: " + strings.Join(parts, "  ·  ")
 }
 
-func estimate(jobs []ChannelJob, workers int, perDelete time.Duration) time.Duration {
+func estimate(jobs []ChannelJob, workers int, perDelete time.Duration, maxRPS float64) time.Duration {
 	if workers < 1 {
 		workers = 1
 	}
 	// Longest-processing-time bound: greedily pack channels onto `workers`
 	// buckets, runtime ≈ the fullest bucket. Good enough for a preflight ETA.
 	buckets := make([]int64, workers)
+	var total int64
 	for _, j := range jobs {
 		min, idx := buckets[0], 0
 		for i, v := range buckets {
@@ -882,6 +897,7 @@ func estimate(jobs []ChannelJob, workers int, perDelete time.Duration) time.Dura
 			}
 		}
 		buckets[idx] += int64(j.count())
+		total += int64(j.count())
 	}
 	var maxCount int64
 	for _, v := range buckets {
@@ -889,7 +905,15 @@ func estimate(jobs []ChannelJob, workers int, perDelete time.Duration) time.Dura
 			maxCount = v
 		}
 	}
-	return time.Duration(maxCount) * perDelete
+	est := time.Duration(maxCount) * perDelete
+	// The account-wide limiter spaces every request at 1/maxRPS, so no worker
+	// count gets the run under total/maxRPS.
+	if maxRPS > 0 {
+		if capped := time.Duration(float64(total) / maxRPS * float64(time.Second)); capped > est {
+			est = capped
+		}
+	}
+	return est
 }
 
 // parseTypes turns a comma-separated --type value into a selection set,

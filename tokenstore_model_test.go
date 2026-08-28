@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // A token is stored only when remember is on and it validated, and cleared on forget.
 func TestModelRemembersAndForgetsToken(t *testing.T) {
@@ -62,6 +65,44 @@ func TestApplyTokenCheckPersistsWhenValid(t *testing.T) {
 	m.applyTokenCheck(tokenCheckMsg{token: "good-token", state: tsValid, user: "me", userID: "88"})
 	if !hasStoredToken("user-88") {
 		t.Fatal("a validated token should be persisted via applyTokenCheck")
+	}
+}
+
+// The Remember field reports what the keyring holds, not just the flag: on with
+// nothing saved, on with this token saved, and on after a save that failed.
+func TestRememberFieldReflectsStoredToken(t *testing.T) {
+	stubKeyring(t, true)
+	t.Setenv("DISCORD_DELETE_STATE_DIR", t.TempDir())
+	m := demoModel()
+	m.stateKey = "user-99"
+	m.cfg.remember = true
+	m.cfg.token = "tok-abc"
+	m.tokenState = tsChecking
+
+	if got := m.fieldValue("remember"); got != "on (not saved yet)" {
+		t.Fatalf("remember on with nothing stored: got %q", got)
+	}
+
+	m.tokenState = tsValid
+	m.maybeSaveToken()
+	if got := m.fieldValue("remember"); got != "on (saved for this account)" {
+		t.Fatalf("remember on with the token stored: got %q", got)
+	}
+
+	stubKeyring(t, false)
+	m.cfg.token = "tok-def"
+	m.maybeSaveToken()
+	if got := m.fieldValue("remember"); got != "on (save failed, see guide)" {
+		t.Fatalf("remember on after a failed save: got %q", got)
+	}
+	if !strings.HasPrefix(m.storeNote, "not remembered:") {
+		t.Fatalf("the guide note should say the save failed, got %q", m.storeNote)
+	}
+
+	m.cfg.token = "tok-ghi"
+	m.startTokenCheck()
+	if got := m.fieldValue("remember"); got != "on (not saved yet)" {
+		t.Fatalf("a fresh token must not inherit the failure: got %q", got)
 	}
 }
 

@@ -124,7 +124,7 @@ func sendNtfy(ctx context.Context, target, title, message, priority, tags string
 // runningNtfy builds a live progress notification from a snapshot. `paused`
 // switches the title, tags, and buttons (Pause vs Resume). ctlTarget enables the
 // buttons; when it's "", the notification carries progress only, no controls.
-func runningNtfy(pkg string, snap Snapshot, paused bool, ctlTarget string) ntfyMessage {
+func runningNtfy(pkg, kind string, snap Snapshot, paused bool, ctlTarget string) ntfyMessage {
 	pct := 0.0
 	if snap.Total > 0 {
 		pct = float64(snap.Processed) / float64(snap.Total) * 100
@@ -147,7 +147,7 @@ func runningNtfy(pkg string, snap Snapshot, paused bool, ctlTarget string) ntfyM
 	if snap.Failed > 0 {
 		fmt.Fprintf(&b, " · %s failed", commafy(int(snap.Failed)))
 	}
-	fmt.Fprintf(&b, "\neta %s · %.2f msg/s", etaStr(snap), snap.Rate)
+	fmt.Fprintf(&b, "\neta %s · %.2f %s now", etaStr(snap), snap.RecentRate, perSecUnit(kind))
 	// snap.Errors is never included: its entries carry message IDs, request
 	// URLs, and response snippets, and ntfy bodies are counts/status only
 	// (topics on the public server are readable by anyone who knows the name).

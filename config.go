@@ -53,10 +53,15 @@ func parseNotifyEvery(s string) (time.Duration, error) {
 	return d, nil
 }
 
-// fmtNotifyEvery renders an interval compactly ("30m", "1h", "1h30m", "off").
+// fmtNotifyEvery renders an interval compactly ("30m", "1h", "1h30m", "1m30s",
+// "off"). The output is fed back through parseNotifyEvery on the next launch, so
+// it has to carry the full precision of what the parser accepts.
 func fmtNotifyEvery(d time.Duration) string {
 	if d <= 0 {
 		return "off"
+	}
+	if d%time.Minute != 0 {
+		return d.String() // an h/m split would drop the odd seconds
 	}
 	mins := int(d.Minutes())
 	h, m := mins/60, mins%60

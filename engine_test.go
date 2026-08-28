@@ -172,3 +172,59 @@ func TestStoppedRunIsNotCompleted(t *testing.T) {
 		t.Fatalf("a cancelled run must not be Completed (deleted %d of %d)", snap.Deleted, snap.Total)
 	}
 }
+
+// TestRecentRateSteadyThenStall drives the windowed rate with synthetic
+// timestamps: a steady delete/sec reads as ~1/s, and a stall after it reads as
+// zero while the run average stays positive.
+func TestRecentRateSteadyThenStall(t *testing.T) {
+	s := NewStats(1000, 1)
+	sec := int64(time.Second)
+	// A coarse Windows wall clock can read the same instant at NewStats and
+	// Snapshot; backdating the start keeps the run-average denominator nonzero.
+	s.startNano -= 150 * sec
+	for i := int64(1); i <= 120; i++ {
+		s.noteDeleted(s.startNano + i*sec)
+		atomic.AddInt64(&s.deleted, 1)
+	}
+	now := s.startNano + 120*sec
+	if r := s.recentRate(now); r < 0.9 || r > 1.1 {
+		t.Fatalf("steady 1/s should read ~1.0, got %.3f", r)
+	}
+	// Half the window empty halves the rate.
+	if r := s.recentRate(now + 30*sec); r < 0.4 || r > 0.6 {
+		t.Fatalf("30s into a stall should read ~0.5, got %.3f", r)
+	}
+	if r := s.recentRate(now + 2*int64(rateWindow)); r != 0 {
+		t.Fatalf("a stall past the window should read 0, got %.3f", r)
+	}
+	if snap := s.Snapshot(); snap.Rate <= 0 {
+		t.Fatalf("run average must stay positive through a stall, got %.3f", snap.Rate)
+	}
+}
+
+// TestSnapshotCarriesRecentRate checks the wiring: Snapshot().RecentRate is
+// the windowed rate, so deletions aged past the window drop it to zero while
+// the run-average Rate keeps counting them.
+func TestSnapshotCarriesRecentRate(t *testing.T) {
+	s := NewStats(10, 1)
+	s.startNano -= int64(time.Second) // backdated so a coarse Windows clock cannot read elapsed as zero
+	s.addDeleted()
+	s.addDeleted()
+	if snap := s.Snapshot(); snap.RecentRate <= 0 {
+		t.Fatalf("RecentRate should be positive right after deletions, got %.3f", snap.RecentRate)
+	}
+	shift := 2 * int64(rateWindow)
+	s.startNano -= shift
+	s.mu.Lock()
+	for i := range s.recent {
+		s.recent[i] -= shift
+	}
+	s.mu.Unlock()
+	snap := s.Snapshot()
+	if snap.RecentRate != 0 {
+		t.Fatalf("deletions older than the window must not count, got RecentRate %.3f", snap.RecentRate)
+	}
+	if snap.Rate <= 0 {
+		t.Fatalf("run average must keep aged deletions, got %.3f", snap.Rate)
+	}
+}

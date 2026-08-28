@@ -431,6 +431,40 @@ func TestBoundaryPauseCarriesIntoNextPhase(t *testing.T) {
 	}
 }
 
+// Nothing closes the control channel, so the run's context is what releases a
+// parked listener; otherwise every run with remote control on leaves a
+// goroutine blocked for the life of the process.
+func TestControlListenerReleasedWhenRunEnds(t *testing.T) {
+	m := demoModel()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	m.runCtx = ctx
+	m.controlCh, m.controlOn = make(chan controlCmd, 8), true
+
+	m.controlCh <- cmdPause
+	if msg := m.rearmControl()(); msg != (controlMsg{cmd: cmdPause}) {
+		t.Fatalf("want the queued command delivered, got %v", msg)
+	}
+
+	parked := make(chan tea.Msg, 1)
+	cmd := m.rearmControl()
+	go func() { parked <- cmd() }()
+	select {
+	case msg := <-parked:
+		t.Fatalf("listener returned while the run was live: %v", msg)
+	case <-time.After(50 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case msg := <-parked:
+		if msg != nil {
+			t.Fatalf("a released listener must deliver nothing, got %v", msg)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("control listener still parked after the run ended")
+	}
+}
+
 // Execute is refused when the resume log can't be opened: deleting without it
 // would repeat every delete on the next run.
 func TestExecuteGuardRequiresWritableResumeLog(t *testing.T) {
@@ -449,5 +483,68 @@ func TestExecuteGuardRequiresWritableResumeLog(t *testing.T) {
 	m.progPath = filepath.Join(dir, "x.deleted.log")
 	if reason := m.executeGuard(); reason != "" {
 		t.Fatalf("guard should pass with a writable log path, got %q", reason)
+	}
+}
+
+// The tick that first observes an abort can land while workers are still
+// winding down; the log close must wait for the engine so a worker's pending
+// record still reaches the resume log.
+func TestAbortTickWaitsForEngineBeforeClosingLog(t *testing.T) {
+	t.Setenv("DISCORD_DELETE_STATE_DIR", t.TempDir())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(204)
+	}))
+	defer srv.Close()
+	apiBaseOverride = srv.URL
+	t.Cleanup(func() { apiBaseOverride = "" })
+
+	m := demoModel()
+	m.screen = scRunning
+	m.phases = []phasePlan{{kind: "messages"}}
+	path := filepath.Join(t.TempDir(), "deleted.log")
+	pl, err := openProgressLog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.progLog = pl
+	m.stats = NewStats(1, 1)
+	inRecord := make(chan struct{})
+	release := make(chan struct{})
+	m.eng = NewEngine(EngineConfig{
+		Workers: 1, DeleteDelay: time.Millisecond, GlobalMinInterval: time.Millisecond,
+		OnDeleted: func(id string) {
+			close(inRecord) // parks the worker with its record still pending
+			<-release
+			pl.record(id)
+		},
+	}, m.stats)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	m.engDone = m.eng.RunAsync(ctx, []ChannelJob{{ChannelID: "9", Label: "x", MsgIDs: []string{"1"}}})
+
+	<-inRecord
+	m.stats.aborted.Store(true)
+	cancel()
+	tickDone := make(chan struct{})
+	go func() {
+		_, _ = m.Update(tickMsg{})
+		close(tickDone)
+	}()
+	// The tick must not return while the worker still holds its record; give
+	// a non-waiting close room to surface, then let the worker finish.
+	select {
+	case <-tickDone:
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(release)
+	<-tickDone
+	if err := pl.writeErr(); err != nil {
+		t.Fatalf("record raced the close: %v", err)
+	}
+	if set := loadProgressSet(path); !set["1"] {
+		t.Fatalf("shutdown record missing from resume log, set=%v", set)
+	}
+	if !m.reported {
+		t.Fatal("an abort must still finalize the run")
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/cursor"
 	tea "github.com/charmbracelet/bubbletea"
@@ -60,6 +61,25 @@ func TestRunningViewRendersWithoutPanic(t *testing.T) {
 	out, _ := m.viewRunning()
 	if !strings.Contains(out, "discord-delete") || !strings.Contains(out, "deleted") {
 		t.Fatalf("running view missing expected content:\n%s", out)
+	}
+}
+
+// TestRateUnitFollowsPhase checks the Rate panel's unit tracks the phase kind.
+func TestRateUnitFollowsPhase(t *testing.T) {
+	m := testModel()
+	m.stats = NewStats(10, 1)
+	m.screen = scRunning
+
+	out, _ := m.viewRunning()
+	if !strings.Contains(out, "msg/s") {
+		t.Fatalf("message phase should label the rate msg/s:\n%s", out)
+	}
+
+	m.phases = []phasePlan{{kind: "reactions"}}
+	m.phaseIdx = 0
+	out, _ = m.viewRunning()
+	if !strings.Contains(out, "reactions/s") || strings.Contains(out, "msg/s") {
+		t.Fatalf("reactions phase should label the rate reactions/s:\n%s", out)
 	}
 }
 
@@ -381,5 +401,81 @@ func TestHomeAndConfigureRender(t *testing.T) {
 	}
 	if out := m.viewChannels(); !strings.Contains(out, "Servers") {
 		t.Fatalf("channels view missing content:\n%s", out)
+	}
+}
+
+// The Plan panel has to cost the phases that will actually run: reactions pace
+// on their own floor, and a two-phase run pays for both.
+func TestPlanPanelCoversEnabledPhases(t *testing.T) {
+	m := testModel()
+	m.cfg.reactionDelay = 0.3
+	m.setReactions([]Reaction{
+		{ChannelID: "r1", MessageID: "1200000000000000001", EmojiName: "👍",
+			Snowflake: 1200000000000000001, HasSnow: true},
+		{ChannelID: "r1", MessageID: "1200000000000000002", EmojiName: "🔥",
+			Snowflake: 1200000000000000002, HasSnow: true},
+		{ChannelID: "r2", MessageID: "1200000000000000003", EmojiName: "🥒",
+			Snowflake: 1200000000000000003, HasSnow: true},
+	}, nil, PackageCapabilities{HasMessages: true, HasReactions: true}, "")
+
+	msgETA := estimate(m.jobs, m.cfg.workers, time.Duration(m.cfg.delay*float64(time.Second)), m.cfg.maxRPS)
+	reactETA := estimate(m.reactJobs, m.cfg.workers, time.Duration(m.cfg.reactionDelay*float64(time.Second)), m.cfg.maxRPS)
+	if msgETA == 0 || reactETA == 0 || msgETA == reactETA {
+		t.Fatalf("precondition: want two distinct non-zero phase estimates, got %v and %v", msgETA, reactETA)
+	}
+
+	m.cfg.delMessages, m.cfg.delReactions = true, false
+	if got := m.previewETA(); got != msgETA {
+		t.Errorf("messages only: ETA = %v, want %v", got, msgETA)
+	}
+	if body := stripEscapes(m.planBody()); !strings.Contains(body, "msg/s") || !strings.Contains(body, "~1.1s / delete") {
+		t.Errorf("messages only: plan panel reads\n%s", body)
+	}
+
+	m.cfg.delMessages, m.cfg.delReactions = false, true
+	if got := m.previewETA(); got != reactETA {
+		t.Errorf("reactions only: ETA = %v, want %v", got, reactETA)
+	}
+	if body := stripEscapes(m.planBody()); !strings.Contains(body, "react/s") || !strings.Contains(body, "~0.3s / delete") {
+		t.Errorf("reactions only: plan panel reads\n%s", body)
+	}
+
+	m.cfg.delMessages, m.cfg.delReactions = true, true
+	if got := m.previewETA(); got != msgETA+reactETA {
+		t.Errorf("both phases: ETA = %v, want %v", got, msgETA+reactETA)
+	}
+	body := stripEscapes(m.planBody())
+	for _, want := range []string{"messages", "reactions", "~1.1s each", "~0.3s each"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("both phases: plan panel missing %q:\n%s", want, body)
+		}
+	}
+}
+
+// With enough channels the account-wide request cap binds before the
+// per-channel floor, and est. time and throughput describe the same run:
+// 40 deletions at the capped 2/s is 20s, not the floor-only 11s.
+func TestPlanPanelETARespectsAccountCap(t *testing.T) {
+	raws := make([]RawChannel, 8)
+	sel := map[string]bool{}
+	for i := range raws {
+		id := fmt.Sprintf("c%d", i)
+		msgs := make([]Message, 5)
+		for k := range msgs {
+			msgs[k] = newMessage(fmt.Sprintf("10000000000000%02d%02d", i, k), "hi")
+		}
+		raws[i] = RawChannel{ChannelID: id, Label: "#ch" + id, Messages: msgs}
+		sel[id] = true
+	}
+	cfg := runConfig{order: "oldest", workers: 4, delay: 1.1, maxRPS: 2, delMessages: true}
+	m := newAppModel(raws, cfg, sel, "package.zip")
+	if got := m.previewETA(); got != 20*time.Second {
+		t.Fatalf("capped ETA = %v, want 20s", got)
+	}
+	body := stripEscapes(m.planBody())
+	for _, want := range []string{"est. time    20s", "~2.0 msg/s"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("plan panel missing %q:\n%s", want, body)
+		}
 	}
 }

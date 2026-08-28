@@ -206,14 +206,20 @@ func (m *appModel) fieldValue(id string) string {
 		return "•••••••• set"
 	case "remember":
 		if m.cfg.remember {
-			return "on (saved for this account)"
+			switch {
+			case m.currentTokenStored():
+				return "on (saved for this account)"
+			case m.storeFailed:
+				return "on (save failed, see guide)"
+			}
+			return "on (not saved yet)"
 		}
-		if m.stateKey != "" && hasStoredToken(m.stateKey) {
+		if m.storedTokenExists() {
 			return "off (a stored token remains)"
 		}
 		return "off"
 	case "forget":
-		if m.stateKey != "" && hasStoredToken(m.stateKey) {
+		if m.storedTokenExists() {
 			return "↩ delete stored token"
 		}
 		return "nothing stored"

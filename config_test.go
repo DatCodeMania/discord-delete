@@ -107,6 +107,39 @@ func TestFmtNotifyEvery(t *testing.T) {
 	}
 }
 
+func TestFmtNotifyEveryKeepsSeconds(t *testing.T) {
+	cases := map[string]string{
+		"1m":       "1m",
+		"5m":       "5m",
+		"90s":      "1m30s",
+		"2m30s":    "2m30s",
+		"90m":      "1h30m",
+		"1h":       "1h",
+		"1h30m15s": "1h30m15s",
+		"1m0.5s":   "1m0.5s",
+	}
+	for in, want := range cases {
+		d, err := parseNotifyEvery(in)
+		if err != nil {
+			t.Errorf("parseNotifyEvery(%q) errored: %v", in, err)
+			continue
+		}
+		got := fmtNotifyEvery(d)
+		if got != want {
+			t.Errorf("fmtNotifyEvery(%q) = %q, want %q", in, got, want)
+			continue
+		}
+		back, err := parseNotifyEvery(got)
+		if err != nil {
+			t.Errorf("parseNotifyEvery(%q) errored: %v", got, err)
+			continue
+		}
+		if back != d {
+			t.Errorf("%q round-tripped to %v, want %v", in, back, d)
+		}
+	}
+}
+
 func TestNotifyEveryRoundTrips(t *testing.T) {
 	raws := []RawChannel{{ChannelID: "1", Label: "#a"}}
 	cfg := defaultRunConfig()
@@ -225,5 +258,33 @@ func TestResetDefaultsKeepsToken(t *testing.T) {
 		if !on {
 			t.Fatalf("reset should re-select all channels, %s is off", id)
 		}
+	}
+}
+
+// TestPlainSnapshotKeepsFlagOnlyConfig pins the plain fallback to the CLI flags:
+// applyPersisted overlays the saved channel selection in place, and the type
+// screen toggles types in place, so the snapshot must see neither.
+func TestPlainSnapshotKeepsFlagOnlyConfig(t *testing.T) {
+	raws := []RawChannel{{ChannelID: "1"}, {ChannelID: "2"}}
+	cfg := defaultRunConfig()
+	cfg.typeSel = map[string]bool{"image": true}
+	sel := map[string]bool{"1": true, "2": false}
+
+	plain := plainRun{cfg: cfg, sel: sel}.clone()
+
+	saved := persistedConfig{Order: "newest", AllChannels: true}
+	// An explicit --type keeps the flag-built map, and the type screen then
+	// toggles it in place.
+	applyPersisted(&cfg, sel, saved, map[string]bool{"type": true}, raws)
+	cfg.typeSel["voice"] = true
+
+	if !sel["2"] {
+		t.Fatal("applyPersisted should restore the saved selection")
+	}
+	if plain.sel["2"] {
+		t.Fatalf("snapshot took the saved selection: %v", plain.sel)
+	}
+	if !plain.cfg.typeSel["image"] || plain.cfg.typeSel["voice"] {
+		t.Fatalf("snapshot took a later type edit: %v", plain.cfg.typeSel)
 	}
 }

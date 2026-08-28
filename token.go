@@ -209,7 +209,8 @@ func uniqueHandle(username, discriminator string) string {
 // probe command (or clears state and returns nil for an empty token).
 func (m *appModel) startTokenCheck() tea.Cmd {
 	tok := strings.TrimSpace(m.cfg.token)
-	m.browserErr = "" // a manual token supersedes a stale browser sign-in error
+	// A manual token supersedes a stale browser sign-in error and save failure.
+	m.browserErr, m.storeFailed = "", false
 	if tok == "" {
 		m.tokenState, m.tokenUser, m.tokenErr, m.tokenID, m.tokenHandle = tsNone, "", "", "", ""
 		return nil
