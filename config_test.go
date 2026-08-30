@@ -370,3 +370,128 @@ func TestPlainSnapshotKeepsFlagOnlyConfig(t *testing.T) {
 		t.Fatalf("snapshot took a later type edit: %v", plain.cfg.typeSel)
 	}
 }
+
+// flagRunState mirrors main's flags-then-overlay order for a package with a
+// saved config.
+func flagRunState() (cfg runConfig, sel, reactSel map[string]bool, start startState,
+	setFlags map[string]bool, saved persistedConfig, caps PackageCapabilities, raws, reactRaws []RawChannel) {
+	raws = []RawChannel{{ChannelID: "c1"}, {ChannelID: "c2"}}
+	reactRaws = []RawChannel{{ChannelID: "r1"}, {ChannelID: "r2"}}
+	caps = PackageCapabilities{HasMessages: true, HasReactions: true}
+	saved = persistedConfig{Order: "oldest", Content: "keep", Workers: 8,
+		Delay: defDelay, Jitter: defJitter, MaxRPS: defMaxRPS,
+		AllChannels: true, ReactAllChannels: true}
+	setFlags = map[string]bool{"content": true, "last": true, "channel": true, "reaction-channel": true}
+
+	cfg = defaultRunConfig()
+	cfg.content = "hello"
+	cfg.last = "7d"
+	sel = initialSelection(raws, nil, map[string]bool{"c1": true})
+	reactSel = map[string]bool{"r1": true, "r2": false}
+	applyPersisted(&cfg, sel, saved, setFlags, raws)
+	start = snapshotStart(cfg, sel, reactSel)
+	return
+}
+
+// A value present only because its flag was passed reverts before the save.
+func TestUneditedFlagValuesDoNotPersist(t *testing.T) {
+	cfg, sel, reactSel, start, setFlags, saved, caps, raws, reactRaws := flagRunState()
+
+	dropUneditedFlags(&cfg, sel, reactSel, start, setFlags, saved, true, caps, raws, reactRaws)
+
+	path := filepath.Join(t.TempDir(), "cfg.json")
+	if err := saveConfig(path, cfg, sel, raws, reactPersist{caps: caps, selected: reactSel, raws: reactRaws}); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := loadConfig(path)
+	if !ok {
+		t.Fatal("expected to load the config")
+	}
+	if got.Content != "keep" || got.Last != "" {
+		t.Fatalf("untouched flag values reached the saved config: %+v", got)
+	}
+	if !got.AllChannels {
+		t.Fatalf("--channel narrowing reached the saved config: %+v", got)
+	}
+	if !got.ReactAllChannels {
+		t.Fatalf("--reaction-channel narrowing reached the saved config: %+v", got)
+	}
+	if got.Workers != 8 {
+		t.Fatalf("flagless saved field should survive, got workers %d", got.Workers)
+	}
+}
+
+// Editing in the TUI means "remember this", flag or no flag.
+func TestEditedFlagFieldsPersist(t *testing.T) {
+	cfg, sel, reactSel, start, setFlags, saved, caps, raws, reactRaws := flagRunState()
+	cfg.content = "edited"
+	sel["c2"] = true // channel toggled in the TUI on top of --channel
+
+	dropUneditedFlags(&cfg, sel, reactSel, start, setFlags, saved, true, caps, raws, reactRaws)
+
+	if cfg.content != "edited" {
+		t.Fatalf("edited content must persist, got %q", cfg.content)
+	}
+	if !sel["c1"] || !sel["c2"] {
+		t.Fatalf("edited channel selection must persist, got %v", sel)
+	}
+	if cfg.last != "" {
+		t.Fatalf("untouched --last must still revert, got %q", cfg.last)
+	}
+}
+
+func TestFlagFieldRevertedInSessionReverts(t *testing.T) {
+	cfg, sel, reactSel, start, setFlags, saved, caps, raws, reactRaws := flagRunState()
+	for _, v := range []string{"edited", "hello"} { // edit, then back to the flag's value
+		cfg.content = v
+	}
+
+	dropUneditedFlags(&cfg, sel, reactSel, start, setFlags, saved, true, caps, raws, reactRaws)
+
+	if cfg.content != "keep" {
+		t.Fatalf("a round-trip edit must read as untouched, got %q", cfg.content)
+	}
+}
+
+func TestFlaglessFieldsUnaffectedByFlagRevert(t *testing.T) {
+	cfg, sel, reactSel, start, setFlags, saved, caps, raws, reactRaws := flagRunState()
+	cfg.remember = true
+	cfg.workers = 16
+	reactSel["r1"] = true
+	reactSel["r2"] = true
+	delete(setFlags, "reaction-channel") // no flag: the TUI owns this map
+
+	dropUneditedFlags(&cfg, sel, reactSel, start, setFlags, saved, true, caps, raws, reactRaws)
+
+	if !cfg.remember {
+		t.Fatal("remember toggled in the TUI must persist")
+	}
+	if cfg.workers != 16 {
+		t.Fatalf("workers edited in the TUI must persist, got %d", cfg.workers)
+	}
+	if !reactSel["r1"] || !reactSel["r2"] {
+		t.Fatalf("flagless reaction selection must save as edited: %v", reactSel)
+	}
+}
+
+// With nothing saved, an untouched flag-set field reverts to the default.
+func TestUneditedFlagsNoSavedConfig(t *testing.T) {
+	raws := []RawChannel{{ChannelID: "c1"}, {ChannelID: "c2"}}
+	caps := PackageCapabilities{HasMessages: true}
+	setFlags := map[string]bool{"content": true, "workers": true, "channel": true}
+
+	cfg := defaultRunConfig()
+	cfg.content = "hello"
+	cfg.workers = 32
+	sel := initialSelection(raws, nil, map[string]bool{"c1": true})
+	start := snapshotStart(cfg, sel, nil)
+
+	dropUneditedFlags(&cfg, sel, nil, start, setFlags, persistedConfig{}, false, caps, raws, nil)
+
+	if cfg.content != "" || cfg.workers != defWorkers {
+		t.Fatalf("untouched flags must fall back to defaults: %+v", cfg)
+	}
+	if !sel["c1"] || !sel["c2"] {
+		t.Fatalf("--channel narrowing must fall back to all channels: %v", sel)
+	}
+}

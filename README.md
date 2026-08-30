@@ -118,6 +118,8 @@ Full help: `discord-delete --help`
 <details>
 <summary>All flags</summary>
 
+Explicit on/off flags require an "=". A bare `--flag` means true.
+
 **Select what to delete**
 
 | Flag | What it does |
@@ -171,6 +173,7 @@ Full help: `discord-delete --help`
 
 | Flag | What it does |
 |---|---|
+| `--remember` | Save token to your OS keyring |
 | `--token` | User token |
 | `--forget-token` | Delete any stored token for this package's account, then exit |
 
@@ -233,7 +236,7 @@ When a run completes, that path is printed with a button. Click it or press `o` 
 
 That directory also holds the resume log, `<key>.deleted.log`, one confirmed-gone ID per line. It is keyed by account and therefore works across packages. Delete the log to start over from scratch.
 
-The TUI also saves its settings to `<key>.config.json` in that directory, so the next run for that account starts where you left off. The token is not saved here. Any explicit flag overrides a saved value, and headless runs ignore the file.
+The TUI also saves its settings to `<key>.config.json` in that directory, so the next run for that account starts where you left off. The token is not saved here. Any explicit flag overrides a saved value for that run only. Edited TUI fields are saved across runs. Headless runs do not reference this file.
 
 ## Reactions
 

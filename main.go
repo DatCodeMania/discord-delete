@@ -23,29 +23,30 @@ var buildVersion = "dev"
 
 func main() {
 	var (
-		pkgPath  = flag.String("package", "", "path to your Discord data package (.zip or extracted folder); omit to open guided setup")
-		token    = flag.String("token", "", "user token")
-		guildF   = flag.String("guild", "", "delete only these guild IDs")
-		chanF    = flag.String("channel", "", "delete only these comma-separated channel IDs")
-		contentF = flag.String("content", "", "only delete messages whose text contains this substring (or a regex if wrapped in slashes: /pattern/ or /pattern/i)")
-		afterF   = flag.String("after", "", "only messages after this message ID")
-		beforeF  = flag.String("before", "", "only messages before this message ID")
-		afterD   = flag.String("after-date", "", "only messages after this date (YYYY-MM-DD or RFC3339)")
-		beforeD  = flag.String("before-date", "", "only messages before this date (YYYY-MM-DD or RFC3339)")
-		lastF    = flag.String("last", "", "only messages within the last window: 7d, 2w, 3mo, 1y, day/week/month/year, or today (since local midnight)")
-		typeF    = flag.String("type", "", "only these message types (comma-separated): text,media,image,video,audio,voice,file,link")
-		orderF   = flag.String("order", defOrder, "deletion order per channel: oldest | newest")
-		workers  = flag.Int("workers", defWorkers, "channels deleted concurrently")
-		delay    = flag.Float64("delay", defDelay, "base seconds between deletes within one channel")
-		jitter   = flag.Float64("jitter", defJitter, "+/- jitter fraction applied to --delay")
-		maxRPS   = flag.Float64("max-rps", defMaxRPS, "hard account-wide request/sec ceiling (safety cap, <50)")
-		noTUI    = flag.Bool("no-tui", false, "plain non-interactive run")
-		execute  = flag.Bool("execute", false, "start in execute mode (real deletion) instead of dry run")
-		ntfyF    = flag.String("ntfy", "", "ntfy topic (or full URL) to ping when the run finishes (or set DISCORD_DELETE_NTFY)")
-		everyF   = flag.String("notify-every", "", "push a progress notification (with a pause button) this often during a run: 30m, 1h, or 'off' (default 30m; needs --ntfy)")
-		reportF  = flag.String("report", "", "write the end-of-run report to this path (default: in user cache, alongside the resume log)")
-		forgetF  = flag.Bool("forget-token", false, "delete any stored token for this package's account, then exit")
-		versionF = flag.Bool("version", false, "print version and exit")
+		pkgPath   = flag.String("package", "", "path to your Discord data package (.zip or extracted folder); omit to open guided setup")
+		token     = flag.String("token", "", "user token")
+		guildF    = flag.String("guild", "", "delete only these guild IDs")
+		chanF     = flag.String("channel", "", "delete only these comma-separated channel IDs")
+		contentF  = flag.String("content", "", "only delete messages whose text contains this substring (or a regex if wrapped in slashes: /pattern/ or /pattern/i)")
+		afterF    = flag.String("after", "", "only messages after this message ID")
+		beforeF   = flag.String("before", "", "only messages before this message ID")
+		afterD    = flag.String("after-date", "", "only messages after this date (YYYY-MM-DD or RFC3339)")
+		beforeD   = flag.String("before-date", "", "only messages before this date (YYYY-MM-DD or RFC3339)")
+		lastF     = flag.String("last", "", "only messages within the last window: 7d, 2w, 3mo, 1y, day/week/month/year, or today (since local midnight)")
+		typeF     = flag.String("type", "", "only these message types (comma-separated): text,media,image,video,audio,voice,file,link")
+		orderF    = flag.String("order", defOrder, "deletion order per channel: oldest | newest")
+		workers   = flag.Int("workers", defWorkers, "channels deleted concurrently")
+		delay     = flag.Float64("delay", defDelay, "base seconds between deletes within one channel")
+		jitter    = flag.Float64("jitter", defJitter, "+/- jitter fraction applied to --delay")
+		maxRPS    = flag.Float64("max-rps", defMaxRPS, "hard account-wide request/sec ceiling (safety cap, <50)")
+		noTUI     = flag.Bool("no-tui", false, "plain non-interactive run")
+		execute   = flag.Bool("execute", false, "start in execute mode (real deletion) instead of dry run")
+		ntfyF     = flag.String("ntfy", "", "ntfy topic (or full URL) to ping when the run finishes (or set DISCORD_DELETE_NTFY)")
+		everyF    = flag.String("notify-every", "", "push a progress notification (with a pause button) this often during a run: 30m, 1h, or 'off' (default 30m; needs --ntfy)")
+		reportF   = flag.String("report", "", "write the end-of-run report to this path (default: in user cache, alongside the resume log)")
+		forgetF   = flag.Bool("forget-token", false, "delete any stored token for this package's account, then exit")
+		rememberF = flag.Bool("remember", false, "save a validated token to your OS keyring for next time; --remember=false overrides a saved on without deleting the stored token")
+		versionF  = flag.Bool("version", false, "print version and exit")
 
 		reactionsF  = flag.Bool("reactions", false, "also remove your reactions (needs an Activity/reporting folder in the package)")
 		noMessagesF = flag.Bool("no-messages", false, "skip message deletion (e.g. to only remove reactions)")
@@ -55,6 +56,13 @@ func main() {
 	)
 	flag.Usage = usage
 	flag.Parse()
+
+	// Nothing takes a positional argument, and "--flag false" parses as a bare
+	// flag plus a stray word, which would mean the opposite of what was typed.
+	if flag.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "error: unexpected argument %q. On/off flags take their value with an = sign, as in --remember=false.\n", flag.Arg(0))
+		os.Exit(2)
+	}
 
 	if *versionF {
 		fmt.Printf("discord-delete %s\n", buildVersion)
@@ -175,6 +183,7 @@ func main() {
 		execute:     *execute,
 		ntfy:        strings.TrimSpace(ntfy),
 		notifyEvery: notifyEvery,
+		remember:    *rememberF,
 
 		delMessages:    delMessages,
 		delReactions:   delReactions,
@@ -262,6 +271,7 @@ func main() {
 		applyPersistedReactChannels(model.reactSelected, model.reactRaws, saved, setFlags)
 	}
 	model.recompute() // reflect the resume set + saved config in the initial preview
+	start := snapshotStart(model.cfg, model.selected, model.reactSelected)
 	prog := tea.NewProgram(model, tea.WithAltScreen())
 	final, err := prog.Run()
 	if err != nil {
@@ -269,8 +279,11 @@ func main() {
 		runPlain(plain)
 		return
 	}
-	// Persist this package's settings for next time (never the token).
+	// Persist this package's settings for next time (never the token). Untouched
+	// flag-set fields revert first: a flag configures the current run only.
 	if fm, ok := final.(*appModel); ok {
+		dropUneditedFlags(&fm.cfg, fm.selected, fm.reactSelected, start,
+			setFlags, saved, haveSaved, fm.caps, raws, fm.reactRaws)
 		_ = saveConfig(cfgPath, fm.cfg, fm.selected, raws,
 			reactPersist{caps: fm.caps, selected: fm.reactSelected, raws: fm.reactRaws})
 	}

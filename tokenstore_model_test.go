@@ -134,3 +134,75 @@ func TestAbortForgetsOnlyTheTokenInUse(t *testing.T) {
 		t.Fatal("forgetting should clear the saved-token bookkeeping")
 	}
 }
+
+// An explicit --remember wins over the saved config both ways; without it the
+// saved value is restored.
+func TestRememberFlagBeatsPersisted(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		passed   bool
+		flagVal  bool
+		savedVal bool
+		want     bool
+	}{
+		{"explicit false over saved on", true, false, true, false},
+		{"explicit true over saved off", true, true, false, true},
+		{"absent restores saved on", false, false, true, true},
+		{"absent restores saved off", false, false, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := defaultRunConfig()
+			cfg.remember = tc.flagVal
+			setFlags := map[string]bool{}
+			if tc.passed {
+				setFlags["remember"] = true
+			}
+			applyPersisted(&cfg, map[string]bool{}, persistedConfig{Remember: tc.savedVal}, setFlags, nil)
+			if cfg.remember != tc.want {
+				t.Fatalf("remember = %v, want %v", cfg.remember, tc.want)
+			}
+		})
+	}
+}
+
+// --remember=false declines to save without touching what is stored.
+func TestRememberFalseKeepsOneOffTokenOutOfKeyring(t *testing.T) {
+	store := stubKeyring(t, true)
+	t.Setenv("DISCORD_DELETE_STATE_DIR", t.TempDir())
+	if _, err := saveToken("user-9", "stored-tok"); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := defaultRunConfig()
+	applyPersisted(&cfg, map[string]bool{}, persistedConfig{Remember: true}, map[string]bool{"remember": true}, nil)
+
+	m := demoModel()
+	m.stateKey = "user-9"
+	m.cfg.remember = cfg.remember
+	m.cfg.token = "one-off-tok"
+	m.applyTokenCheck(tokenCheckMsg{token: "one-off-tok", state: tsValid})
+
+	if store["user-9"] != "stored-tok" {
+		t.Fatalf("keyring holds %q, want the stored token untouched", store["user-9"])
+	}
+}
+
+// --remember=true arms saving even when the saved config is off.
+func TestRememberTrueArmsSavingOverPersistedOff(t *testing.T) {
+	stubKeyring(t, true)
+	t.Setenv("DISCORD_DELETE_STATE_DIR", t.TempDir())
+
+	cfg := defaultRunConfig()
+	cfg.remember = true
+	applyPersisted(&cfg, map[string]bool{}, persistedConfig{Remember: false}, map[string]bool{"remember": true}, nil)
+
+	m := demoModel()
+	m.stateKey = "user-10"
+	m.cfg.remember = cfg.remember
+	m.cfg.token = "fresh-tok"
+	m.applyTokenCheck(tokenCheckMsg{token: "fresh-tok", state: tsValid})
+
+	if !hasStoredToken("user-10") {
+		t.Fatal("a validated token should be stored when --remember=true")
+	}
+}

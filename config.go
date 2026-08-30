@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -301,7 +302,9 @@ func applyPersisted(cfg *runConfig, sel map[string]bool, p persistedConfig, setF
 			cfg.notifyEvery = d
 		}
 	}
-	cfg.remember = p.Remember
+	if !setFlags["remember"] {
+		cfg.remember = p.Remember
+	}
 	// Delete targets: restore each unless its flag was explicitly passed. Absent
 	// (nil) means a pre-feature config, so the capability-derived default stands.
 	if !setFlags["no-messages"] && p.DelMessages != nil {
@@ -348,4 +351,112 @@ func applyPersistedReactChannels(reactSelected map[string]bool, reactRaws []RawC
 		return
 	}
 	applyChannelSelection(reactSelected, reactRaws, p.ReactAllChannels, p.ReactChannels)
+}
+
+// persistedFlagNames are the flag names the applyPersisted guards check.
+var persistedFlagNames = []string{
+	"order", "content", "after-date", "before-date", "last", "type",
+	"workers", "delay", "jitter", "max-rps", "ntfy", "notify-every",
+	"no-messages", "reactions", "run-order", "reaction-delay",
+	"guild", "channel", "reaction-channel",
+}
+
+// flagFieldEqual compares the runConfig field a flag controls. Selection flags
+// live outside runConfig and report true; the caller compares those maps.
+func flagFieldEqual(name string, a, b runConfig) bool {
+	switch name {
+	case "order":
+		return a.order == b.order
+	case "content":
+		return a.content == b.content
+	case "after-date":
+		return a.afterDate == b.afterDate
+	case "before-date":
+		return a.beforeDate == b.beforeDate
+	case "last":
+		return a.last == b.last
+	case "type":
+		return maps.Equal(a.typeSel, b.typeSel)
+	case "workers":
+		return a.workers == b.workers
+	case "delay":
+		return a.delay == b.delay
+	case "jitter":
+		return a.jitter == b.jitter
+	case "max-rps":
+		return a.maxRPS == b.maxRPS
+	case "ntfy":
+		return a.ntfy == b.ntfy
+	case "notify-every":
+		return a.notifyEvery == b.notifyEvery
+	case "no-messages":
+		return a.delMessages == b.delMessages
+	case "reactions":
+		return a.delReactions == b.delReactions
+	case "run-order":
+		return a.reactionsFirst == b.reactionsFirst
+	case "reaction-delay":
+		return a.reactionDelay == b.reactionDelay
+	}
+	return true
+}
+
+// startState is what the TUI opened with. The maps are cloned because the TUI
+// edits them in place.
+type startState struct {
+	cfg      runConfig
+	sel      map[string]bool
+	reactSel map[string]bool
+}
+
+func snapshotStart(cfg runConfig, sel, reactSel map[string]bool) startState {
+	cfg.typeSel = maps.Clone(cfg.typeSel)
+	return startState{cfg: cfg, sel: maps.Clone(sel), reactSel: maps.Clone(reactSel)}
+}
+
+// dropUneditedFlags reverts every field that holds its value only because a
+// flag was passed, so a flag configures one run and only a TUI edit is saved.
+// A field edited back to the flag's own value cannot be told from an untouched
+// one and reverts too.
+func dropUneditedFlags(cfg *runConfig, sel, reactSelected map[string]bool, start startState,
+	setFlags map[string]bool, saved persistedConfig, haveSaved bool,
+	caps PackageCapabilities, raws, reactRaws []RawChannel) {
+	// The baseline this run would have started from with no flags at all.
+	base := defaultRunConfig()
+	base.delMessages, base.delReactions = resolveDeleteTargets(caps, false, false)
+	baseSel := initialSelection(raws, nil, nil)
+	baseReact := initialSelection(reactRaws, nil, nil)
+	if haveSaved {
+		applyPersisted(&base, baseSel, saved, map[string]bool{}, raws)
+		applyPersistedReactChannels(baseReact, reactRaws, saved, map[string]bool{})
+	}
+	basePersisted := toPersisted(base, baseSel, raws,
+		reactPersist{caps: caps, selected: baseReact, raws: reactRaws})
+	basePersisted.Remember = cfg.remember // no flag, so the overlay must not move it
+
+	// applyPersisted skips names marked set, so only the unmarked take the baseline.
+	keep := map[string]bool{}
+	for _, n := range persistedFlagNames {
+		keep[n] = true
+	}
+	for n := range setFlags {
+		if flagFieldEqual(n, *cfg, start.cfg) {
+			delete(keep, n)
+		}
+	}
+	// Equality against the snapshot stands in for "untouched". --guild and
+	// --channel narrow one map, so they revert only together.
+	if (setFlags["guild"] || setFlags["channel"]) && maps.Equal(sel, start.sel) {
+		delete(keep, "guild")
+		delete(keep, "channel")
+	} else {
+		keep["guild"], keep["channel"] = true, true
+	}
+	if setFlags["reaction-channel"] && maps.Equal(reactSelected, start.reactSel) {
+		delete(keep, "reaction-channel")
+	} else {
+		keep["reaction-channel"] = true
+	}
+	applyPersisted(cfg, sel, basePersisted, keep, raws)
+	applyPersistedReactChannels(reactSelected, reactRaws, basePersisted, keep)
 }
