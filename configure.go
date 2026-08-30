@@ -847,7 +847,7 @@ func (m *appModel) treeBody(innerW int) string {
 				box = stGreen.Render("[x]")
 			}
 			label := truncate(rc.Label, clampInt(innerW-18, 16, 60))
-			fmt.Fprintf(&b, "     %s %s %s\n", box, label,
+			fmt.Fprintf(&b, "   %s%s %s %s\n", cursor, box, label,
 				stDim.Render(commafy(rc.items())))
 		}
 	}

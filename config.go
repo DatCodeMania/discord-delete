@@ -220,6 +220,39 @@ func selectionList(raws []RawChannel, selected map[string]bool) (all bool, ids [
 	return false, ids
 }
 
+// resolveDeleteTargets picks the phases a run deletes. Reactions also run
+// whenever messages are skipped, so --no-messages alone means reactions only.
+func resolveDeleteTargets(caps PackageCapabilities, reactions, noMessages bool) (delMessages, delReactions bool) {
+	delMessages = caps.HasMessages && !noMessages
+	delReactions = caps.HasReactions && (reactions || !delMessages)
+	return delMessages, delReactions
+}
+
+// markImpliedFlags sets the guards for fields a CLI value already decides under
+// another flag's name, since applyPersisted checks one name per field and would
+// otherwise layer the saved value onto the explicit one. Keyed on the value, not
+// on flag.Visit: a flag passed empty sets nothing and so speaks for nothing.
+func markImpliedFlags(setFlags map[string]bool, cfg runConfig, noMessages bool) {
+	for _, imp := range []struct {
+		set     bool
+		implied []string
+	}{
+		// The ends stay independent: --before says nothing about where a run starts.
+		{cfg.afterSnow != "", []string{"after-date", "last"}},
+		{cfg.afterDate != "", []string{"last"}},
+		{cfg.last != "", []string{"after-date"}},
+		{cfg.beforeSnow != "", []string{"before-date"}},
+		{noMessages, []string{"reactions"}},
+	} {
+		if !imp.set {
+			continue
+		}
+		for _, name := range imp.implied {
+			setFlags[name] = true
+		}
+	}
+}
+
 // applyPersisted overlays a saved config onto cfg/sel, but only for fields whose
 // CLI flag was not explicitly passed (explicit flags always win). Values are
 // validated and clamped so a hand-edited or stale file can't produce a bad

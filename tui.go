@@ -327,11 +327,19 @@ func fmtDur(d time.Duration) string {
 	return fmt.Sprintf("%ds", s)
 }
 
-func etaStr(s Snapshot) string {
+// etaStr renders the ETA for the tally and the ntfy body. A pause is a choice,
+// so it must not read as a stall.
+func etaStr(s Snapshot, paused bool) string {
 	if s.Finished || s.Processed >= s.Total {
 		return "done"
 	}
+	if paused {
+		return "paused"
+	}
 	if s.ETA <= 0 {
+		if s.Deleted > 0 {
+			return "stalled"
+		}
 		return "…"
 	}
 	return fmtDur(s.ETA)

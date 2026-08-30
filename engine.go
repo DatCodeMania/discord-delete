@@ -82,7 +82,7 @@ type Stats struct {
 	workers   []WorkerStatus
 	errRing   []string
 	statusLn  string
-	recent    []int64                   // unixnano deletion times inside rateWindow, oldest first
+	recent    []int64                   // unixnano deletion times inside etaWindow, oldest first
 	forbidden map[string]*ForbiddenStat // channelID -> 403 tally + Discord's reason
 }
 
@@ -90,6 +90,10 @@ type Stats struct {
 // speed (seconds apart per channel, wider under backoff), so a minute holds
 // enough events to read steady while a stall still decays to zero within it.
 const rateWindow = time.Minute
+
+// etaWindow sizes the ETA basis and the ring's retention. A minute flaps with
+// every AIMD backoff cycle; ten spans several, and caps the ring at ~230 KB.
+const etaWindow = 10 * time.Minute
 
 // ForbiddenStat is the per-channel record of 403 (undeletable) responses: how
 // many, and the reason Discord gave (its error "message", e.g. "Missing
@@ -120,7 +124,7 @@ func (s *Stats) noteDeleted(nano int64) {
 }
 
 func (s *Stats) pruneRecentLocked(nano int64) {
-	cut := nano - int64(rateWindow)
+	cut := nano - int64(etaWindow)
 	i := 0
 	for i < len(s.recent) && s.recent[i] < cut {
 		i++
@@ -128,19 +132,22 @@ func (s *Stats) pruneRecentLocked(nano int64) {
 	s.recent = s.recent[i:]
 }
 
-// recentRate is deletions/sec over the trailing rateWindow (the whole run while
-// it is younger than that), so a stall reads as a drop toward zero.
-func (s *Stats) recentRate(nano int64) float64 {
-	window := time.Duration(nano - s.startNano)
-	if window > rateWindow {
-		window = rateWindow
+// windowRate is deletions/sec over the trailing window, or the whole run while
+// it is younger than that, so a stall reads as a drop toward zero.
+func (s *Stats) windowRate(nano int64, window time.Duration) float64 {
+	if age := time.Duration(nano - s.startNano); age < window {
+		window = age
 	}
 	if window <= 0 {
 		return 0
 	}
+	cut := nano - int64(window)
 	s.mu.Lock()
 	s.pruneRecentLocked(nano)
-	n := len(s.recent)
+	n := 0
+	for i := len(s.recent) - 1; i >= 0 && s.recent[i] >= cut; i-- {
+		n++
+	}
 	s.mu.Unlock()
 	return float64(n) / window.Seconds()
 }
@@ -200,9 +207,9 @@ type Snapshot struct {
 	Total, Deleted, Skipped, Failed int64
 	Processed                       int64
 	Elapsed                         time.Duration
-	Rate                            float64 // deletions/sec, run average (the ETA basis)
-	RecentRate                      float64 // deletions/sec over the trailing rateWindow
-	ETA                             time.Duration
+	Rate                            float64       // deletions/sec, run average
+	RecentRate                      float64       // deletions/sec over the trailing rateWindow
+	ETA                             time.Duration // remaining at the trailing etaWindow rate; 0 = unknown
 	Workers                         []WorkerStatus
 	Errors                          []string
 	Status                          string
@@ -225,8 +232,8 @@ func (s *Stats) Snapshot() Snapshot {
 	}
 	var eta time.Duration
 	remaining := s.total - processed
-	if rate > 0.01 && remaining > 0 {
-		eta = time.Duration(float64(remaining)/rate) * time.Second
+	if etaRate := s.windowRate(nowNano, etaWindow); etaRate > 0.01 && remaining > 0 {
+		eta = time.Duration(float64(remaining)/etaRate) * time.Second
 	}
 	s.mu.Lock()
 	workers := make([]WorkerStatus, len(s.workers))
@@ -244,7 +251,7 @@ func (s *Stats) Snapshot() Snapshot {
 	s.mu.Unlock()
 	return Snapshot{
 		Total: s.total, Deleted: deleted, Skipped: skipped, Failed: failed,
-		Processed: processed, Elapsed: elapsed, Rate: rate, RecentRate: s.recentRate(nowNano), ETA: eta,
+		Processed: processed, Elapsed: elapsed, Rate: rate, RecentRate: s.windowRate(nowNano, rateWindow), ETA: eta,
 		Workers: workers, Errors: errs, Status: status,
 		Finished: s.finished.Load(), Completed: s.completed.Load(), Aborted: s.aborted.Load(),
 		Forbidden:     forbidden,

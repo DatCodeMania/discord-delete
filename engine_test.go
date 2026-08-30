@@ -187,14 +187,14 @@ func TestRecentRateSteadyThenStall(t *testing.T) {
 		atomic.AddInt64(&s.deleted, 1)
 	}
 	now := s.startNano + 120*sec
-	if r := s.recentRate(now); r < 0.9 || r > 1.1 {
+	if r := s.windowRate(now, rateWindow); r < 0.9 || r > 1.1 {
 		t.Fatalf("steady 1/s should read ~1.0, got %.3f", r)
 	}
 	// Half the window empty halves the rate.
-	if r := s.recentRate(now + 30*sec); r < 0.4 || r > 0.6 {
+	if r := s.windowRate(now+30*sec, rateWindow); r < 0.4 || r > 0.6 {
 		t.Fatalf("30s into a stall should read ~0.5, got %.3f", r)
 	}
-	if r := s.recentRate(now + 2*int64(rateWindow)); r != 0 {
+	if r := s.windowRate(now+2*int64(rateWindow), rateWindow); r != 0 {
 		t.Fatalf("a stall past the window should read 0, got %.3f", r)
 	}
 	if snap := s.Snapshot(); snap.Rate <= 0 {
@@ -226,5 +226,63 @@ func TestSnapshotCarriesRecentRate(t *testing.T) {
 	}
 	if snap.Rate <= 0 {
 		t.Fatalf("run average must keep aged deletions, got %.3f", snap.Rate)
+	}
+}
+
+// Steady 1/s over the window reads as remaining seconds, though the run average
+// over the mostly idle run is far lower.
+func TestETASteadyThroughput(t *testing.T) {
+	s := NewStats(100000, 1)
+	sec := int64(time.Second)
+	now := time.Now().UnixNano()
+	s.startNano = now - 4*int64(etaWindow)
+	for i := int64(599); i >= 0; i-- {
+		s.noteDeleted(now - i*sec)
+	}
+	atomic.AddInt64(&s.deleted, 600)
+	snap := s.Snapshot()
+	want := float64(snap.Total-snap.Processed) / 1.0
+	got := snap.ETA.Seconds()
+	if got < want*0.9 || got > want*1.1 {
+		t.Fatalf("steady 1/s should give ETA ~%.0fs, got %.0fs", want, got)
+	}
+	if avg := float64(snap.Total-snap.Processed) / snap.Rate; got > avg/2 {
+		t.Fatalf("ETA should track the window rate, not the run average (%.0fs vs %.0fs)", got, avg)
+	}
+}
+
+// An empty window reads as unknown, not as a number from a stale average.
+func TestETAStallReadsStalled(t *testing.T) {
+	s := NewStats(1000, 1)
+	sec := int64(time.Second)
+	now := time.Now().UnixNano()
+	s.startNano = now - 3*int64(etaWindow)
+	for i := int64(100); i >= 1; i-- {
+		s.noteDeleted(now - int64(etaWindow) - i*sec)
+	}
+	atomic.AddInt64(&s.deleted, 100)
+	snap := s.Snapshot()
+	if snap.Rate <= 0 {
+		t.Fatalf("run average should stay positive through a stall, got %.3f", snap.Rate)
+	}
+	if snap.ETA != 0 {
+		t.Fatalf("an empty etaWindow must give ETA 0 (unknown), got %s", snap.ETA)
+	}
+	if got := etaStr(snap, false); got != "stalled" {
+		t.Fatalf("a stalled run should render %q, got %q", "stalled", got)
+	}
+	if got := etaStr(snap, true); got != "paused" {
+		t.Fatalf("pause must win over the stall reading, got %q", got)
+	}
+}
+
+// A young run clamps the window to elapsed time, so an estimate appears early.
+func TestETAYoungRun(t *testing.T) {
+	s := NewStats(10, 1)
+	s.startNano -= int64(time.Second) // backdated so a coarse Windows clock cannot read elapsed as zero
+	s.addDeleted()
+	s.addDeleted()
+	if snap := s.Snapshot(); snap.ETA <= 0 {
+		t.Fatalf("a young run with deletions should still estimate, got %s", snap.ETA)
 	}
 }

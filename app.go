@@ -1332,7 +1332,7 @@ func (m *appModel) tallyBody(snap Snapshot) string {
 		kv("⤼ skipped", 10, stYellow.Render(commafy(int(snap.Skipped)))),
 		kv("✗ failed", 10, stOrange.Render(commafy(int(snap.Failed)))),
 		kv("elapsed", 10, stFrost.Render(fmtDur(snap.Elapsed))),
-		kv("eta", 10, stFrost.Render(etaStr(snap))),
+		kv("eta", 10, stFrost.Render(etaStr(snap, m.paused))),
 	}, "\n")
 }
 
@@ -1350,7 +1350,7 @@ func perSecUnit(kind string) string {
 	if kind == "reactions" {
 		return "reactions/s"
 	}
-	return "msg/s"
+	return "msgs/s"
 }
 
 func (m *appModel) rateBody(snap Snapshot, col int) string {

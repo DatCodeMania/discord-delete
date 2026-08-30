@@ -144,16 +144,19 @@ func main() {
 		}
 	}
 	raws := pkg.Raws
-	if *reactionsF && !pkg.Caps.HasReactions {
-		fmt.Fprintln(os.Stderr, "error: --reactions was passed, but this package has no Activity/reporting data (reactions).")
-		os.Exit(2)
+	// --no-messages leaves reactions as the only phase, so it needs the data too.
+	if !pkg.Caps.HasReactions {
+		switch {
+		case *reactionsF:
+			fmt.Fprintln(os.Stderr, "error: --reactions was passed, but this package has no Activity/reporting data (reactions).")
+			os.Exit(2)
+		case *noMessagesF:
+			fmt.Fprintln(os.Stderr, "error: --no-messages was passed, but this package has no Activity/reporting data (reactions), so there would be nothing to delete.")
+			os.Exit(2)
+		}
 	}
 
-	// Reactions run when asked for (--reactions) or whenever messages are being
-	// skipped (--no-messages, or a package with no messages at all), so
-	// --no-messages alone means "reactions only".
-	delMessages := pkg.Caps.HasMessages && !*noMessagesF
-	delReactions := pkg.Caps.HasReactions && (*reactionsF || !delMessages)
+	delMessages, delReactions := resolveDeleteTargets(pkg.Caps, *reactionsF, *noMessagesF)
 
 	cfg := runConfig{
 		order:       order,
@@ -178,6 +181,7 @@ func main() {
 		reactionsFirst: strings.EqualFold(*runOrderF, "reactions"),
 		reactionDelay:  *reactDelayF,
 	}
+	markImpliedFlags(setFlags, cfg, *noMessagesF)
 
 	sel := initialSelection(raws, toSet(*guildF), toSet(*chanF))
 
@@ -247,7 +251,9 @@ func main() {
 	model.cfg.reactionsFirst = cfg.reactionsFirst
 	model.cfg.reactionDelay = cfg.reactionDelay
 	// Reaction channel scope: an explicit --reaction-channel wins; otherwise fall
-	// back to the saved selection.
+	// back to the saved selection. This asks whether the flag named a channel,
+	// while applyPersistedReactChannels asks whether it was passed at all, so
+	// --reaction-channel "" keeps every channel and still drops the saved one.
 	if len(reactSel) > 0 {
 		for id := range model.reactSelected {
 			model.reactSelected[id] = reactSel[id]
@@ -788,7 +794,7 @@ func plainReport(ctx context.Context, cancel context.CancelFunc, stats *Stats, e
 			pct = float64(s.Processed) / float64(s.Total) * 100
 		}
 		line := fmt.Sprintf("[%5.1f%%] deleted %d  skipped %d  failed %d  (%d/%d)  %.2f/s  eta %s",
-			pct, s.Deleted, s.Skipped, s.Failed, s.Processed, s.Total, s.Rate, etaStr(s))
+			pct, s.Deleted, s.Skipped, s.Failed, s.Processed, s.Total, s.Rate, etaStr(s, eng.isPaused()))
 		if line != lastLine {
 			fmt.Println(line)
 			lastLine = line

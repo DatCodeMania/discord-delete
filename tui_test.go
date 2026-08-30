@@ -71,14 +71,14 @@ func TestRateUnitFollowsPhase(t *testing.T) {
 	m.screen = scRunning
 
 	out, _ := m.viewRunning()
-	if !strings.Contains(out, "msg/s") {
-		t.Fatalf("message phase should label the rate msg/s:\n%s", out)
+	if !strings.Contains(out, "msgs/s") {
+		t.Fatalf("message phase should label the rate msgs/s:\n%s", out)
 	}
 
 	m.phases = []phasePlan{{kind: "reactions"}}
 	m.phaseIdx = 0
 	out, _ = m.viewRunning()
-	if !strings.Contains(out, "reactions/s") || strings.Contains(out, "msg/s") {
+	if !strings.Contains(out, "reactions/s") || strings.Contains(out, "msgs/s") {
 		t.Fatalf("reactions phase should label the rate reactions/s:\n%s", out)
 	}
 }
@@ -477,5 +477,26 @@ func TestPlanPanelETARespectsAccountCap(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("plan panel missing %q:\n%s", want, body)
 		}
+	}
+}
+
+// Pause wins over both an estimate and a stall.
+func TestEtaStrStates(t *testing.T) {
+	live := Snapshot{Total: 100, Processed: 50, Deleted: 50, ETA: 90 * time.Second}
+	if got := etaStr(live, false); got != "1m30s" {
+		t.Errorf("live estimate = %q, want 1m30s", got)
+	}
+	if got := etaStr(live, true); got != "paused" {
+		t.Errorf("paused with an estimate = %q, want paused", got)
+	}
+	stalled := Snapshot{Total: 100, Processed: 50, Deleted: 50}
+	if got := etaStr(stalled, false); got != "stalled" {
+		t.Errorf("empty window with prior deletions = %q, want stalled", got)
+	}
+	if got := etaStr(Snapshot{Total: 100}, false); got != "…" {
+		t.Errorf("no deletions yet = %q, want …", got)
+	}
+	if got := etaStr(Snapshot{Total: 100, Processed: 100, Deleted: 100, Finished: true}, true); got != "done" {
+		t.Errorf("finished = %q, want done", got)
 	}
 }

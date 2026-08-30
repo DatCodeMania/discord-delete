@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -232,6 +233,87 @@ func TestOldConfigKeepsDeleteDefaults(t *testing.T) {
 	}
 	if !cfg.delReactions {
 		t.Fatal("absent del_reactions must not disable reaction deletion")
+	}
+}
+
+func TestNoMessagesOutranksSavedReactionsOff(t *testing.T) {
+	raws := []RawChannel{{ChannelID: "m1"}}
+	caps := PackageCapabilities{HasMessages: true, HasReactions: true}
+	setFlags := map[string]bool{"no-messages": true}
+
+	cfg := defaultRunConfig()
+	cfg.delMessages, cfg.delReactions = resolveDeleteTargets(caps, false, true)
+	markImpliedFlags(setFlags, cfg, true)
+
+	on, off := true, false
+	saved := persistedConfig{Order: "oldest", AllChannels: true, DelMessages: &on, DelReactions: &off}
+	applyPersisted(&cfg, map[string]bool{}, saved, setFlags, raws)
+
+	if cfg.delMessages {
+		t.Fatal("--no-messages must keep message deletion off")
+	}
+	if !cfg.delReactions {
+		t.Fatal("saved delete_reactions:false must not empty a --no-messages run")
+	}
+}
+
+// A bound on the command line silences every saved field spelling the same end;
+// resolveBounds would otherwise intersect the two.
+func TestExplicitBoundsOutrankSavedBounds(t *testing.T) {
+	raws := []RawChannel{{ChannelID: "1"}}
+	saved := persistedConfig{
+		Order: "oldest", AllChannels: true,
+		AfterDate: "2024-01-01", BeforeDate: "2024-06-01", Last: "7d",
+	}
+
+	for _, tc := range []struct {
+		flag    string
+		set     func(*runConfig)
+		silence []string
+	}{
+		{"after", func(c *runConfig) { c.afterSnow = "1100000000000000000" }, []string{"after-date", "last"}},
+		{"after-date", func(c *runConfig) { c.afterDate = "2023-01-01" }, []string{"last"}},
+		{"last", func(c *runConfig) { c.last = "30d" }, []string{"after-date"}},
+		{"before", func(c *runConfig) { c.beforeSnow = "1200000000000000000" }, []string{"before-date"}},
+	} {
+		t.Run(tc.flag, func(t *testing.T) {
+			cfg := defaultRunConfig()
+			tc.set(&cfg)
+			setFlags := map[string]bool{tc.flag: true}
+			markImpliedFlags(setFlags, cfg, false)
+			applyPersisted(&cfg, map[string]bool{"1": true}, saved, setFlags, raws)
+
+			got := map[string]string{"after-date": cfg.afterDate, "before-date": cfg.beforeDate, "last": cfg.last}
+			for _, field := range tc.silence {
+				if got[field] != "" {
+					t.Fatalf("--%s must silence the saved %s, got %q", tc.flag, field, got[field])
+				}
+			}
+		})
+	}
+}
+
+// The user-visible half: a saved window under an explicit snowflake range
+// collapses it and the run dies on "empty date range".
+func TestSavedWindowCannotEmptySnowflakeRange(t *testing.T) {
+	now := time.Date(2026, 7, 8, 0, 0, 0, 0, time.UTC)
+	wantAfter := timeToSnowflake(now.AddDate(-2, 0, 0))
+
+	cfg := defaultRunConfig()
+	cfg.afterSnow = strconv.FormatUint(wantAfter, 10)
+	cfg.beforeSnow = strconv.FormatUint(timeToSnowflake(now.AddDate(-1, 0, 0)), 10)
+	setFlags := map[string]bool{"after": true, "before": true}
+	markImpliedFlags(setFlags, cfg, false)
+
+	saved := persistedConfig{Order: "oldest", AllChannels: true, Last: "7d"}
+	applyPersisted(&cfg, map[string]bool{"1": true}, saved, setFlags, []RawChannel{{ChannelID: "1"}})
+
+	tb, err := resolveBounds(cfg.afterSnow, cfg.beforeSnow, cfg.afterDate, cfg.beforeDate, cfg.last, now)
+	if err != nil {
+		t.Fatalf("explicit snowflake range must resolve: %v", err)
+	}
+	if tb.AfterID != wantAfter {
+		t.Fatalf("after bound: got %d want %d", tb.AfterID, wantAfter)
 	}
 }
 

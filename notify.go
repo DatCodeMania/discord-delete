@@ -147,7 +147,7 @@ func runningNtfy(pkg, kind string, snap Snapshot, paused bool, ctlTarget string)
 	if snap.Failed > 0 {
 		fmt.Fprintf(&b, " · %s failed", commafy(int(snap.Failed)))
 	}
-	fmt.Fprintf(&b, "\neta %s · %.2f %s now", etaStr(snap), snap.RecentRate, perSecUnit(kind))
+	fmt.Fprintf(&b, "\neta %s · %.2f %s now", etaStr(snap, paused), snap.RecentRate, perSecUnit(kind))
 	// snap.Errors is never included: its entries carry message IDs, request
 	// URLs, and response snippets, and ntfy bodies are counts/status only
 	// (topics on the public server are readable by anyone who knows the name).
